@@ -208,6 +208,62 @@ namespace lualoader::lua_api {
         return true;
     }
 
+    /// read_patch_value 的“不抛错”版本：值无法转换时返回 false，交由调用方自行清理后报错。
+    /// 用于 `luaL_error`(longjmp) 会跳过 C++ 析构 / patchlib 释放的场景。
+    static bool try_read_patch_value(lua_State *L, const int idx, const patch_type_t type, void *out) {
+        switch (type) {
+            case PATCH_BOOL:
+                *static_cast<bool *>(out) = lua_toboolean(L, idx) != 0;
+                return true;
+            case PATCH_INT8:
+            case PATCH_INT16:
+            case PATCH_INT32:
+            case PATCH_INT64:
+            case PATCH_UINT8:
+            case PATCH_UINT16:
+            case PATCH_UINT32:
+            case PATCH_UINT64: {
+                int isnum = 0;
+                const lua_Integer v = lua_tointegerx(L, idx, &isnum);
+                if (!isnum) return false;
+                switch (type) {
+                    case PATCH_INT8:   *static_cast<int8_t *>(out) = static_cast<int8_t>(v); break;
+                    case PATCH_INT16:  *static_cast<int16_t *>(out) = static_cast<int16_t>(v); break;
+                    case PATCH_INT32:  *static_cast<int32_t *>(out) = static_cast<int32_t>(v); break;
+                    case PATCH_INT64:  *static_cast<int64_t *>(out) = static_cast<int64_t>(v); break;
+                    case PATCH_UINT8:  *static_cast<uint8_t *>(out) = static_cast<uint8_t>(v); break;
+                    case PATCH_UINT16: *static_cast<uint16_t *>(out) = static_cast<uint16_t>(v); break;
+                    case PATCH_UINT32: *static_cast<uint32_t *>(out) = static_cast<uint32_t>(v); break;
+                    default:           *static_cast<uint64_t *>(out) = static_cast<uint64_t>(v); break;
+                }
+                return true;
+            }
+            case PATCH_FLOAT:
+            case PATCH_DOUBLE: {
+                int isnum = 0;
+                const lua_Number v = lua_tonumberx(L, idx, &isnum);
+                if (!isnum) return false;
+                if (type == PATCH_FLOAT) *static_cast<float *>(out) = static_cast<float>(v);
+                else *static_cast<double *>(out) = static_cast<double>(v);
+                return true;
+            }
+            case PATCH_CHAR: {
+                int isnum = 0;
+                const lua_Integer v = lua_tointegerx(L, idx, &isnum);
+                if (!isnum) return false;
+                *static_cast<char *>(out) = static_cast<char>(v);
+                return true;
+            }
+            case PATCH_POINTER:
+            case PATCH_OBJECT:
+                *static_cast<void **>(out) = to_handle(L, idx);
+                return true;
+            case PATCH_VOID:
+            default:
+                return true;
+        }
+    }
+
     static int lua_traceback(lua_State *L) {
         const char *msg = lua_tostring(L, 1);
         if (msg) {
@@ -574,16 +630,20 @@ namespace lualoader::lua_api {
         return 0;
     }
 
-    /// 依据签名把 Lua 参数编组为 patchlib 的 void** 参数数组
+    /// 依据签名把 Lua 参数编组为 patchlib 的 void** 参数数组。
+    /// 不抛错：成功返回参数个数(>=0)，参数过多返回 -1，参数值不可转换返回 -2。
+    /// 这样调用方可以先释放已分配的 signature 再 luaL_error，避免 longjmp 跳过释放。
     static int build_arg_array(lua_State *L, const int first, const patch_method_signature_t *sig,
                                uint64_t storage[][1], void *argv[], const int capacity) {
         const int argc = sig ? static_cast<int>(tefstd_vector_size(&sig->arg_types)) : 0;
         if (argc > capacity) {
-            return luaL_error(L, "too many method arguments (max %d)", capacity);
+            return -1;
         }
         for (int i = 0; i < argc; ++i) {
             const auto type = *static_cast<patch_type_t *>(tefstd_vector_at(&sig->arg_types, i));
-            read_patch_value(L, first + i, type, &storage[i]);
+            if (!try_read_patch_value(L, first + i, type, &storage[i])) {
+                return -2;
+            }
             argv[i] = &storage[i];
         }
         return argc;
@@ -607,7 +667,12 @@ namespace lualoader::lua_api {
 
         uint64_t storage[MAX_CALL_ARGS][1] = {};
         void *argv[MAX_CALL_ARGS] = {};
-        build_arg_array(L, arg_start, &sig, storage, argv, MAX_CALL_ARGS);
+        const int built = build_arg_array(L, arg_start, &sig, storage, argv, MAX_CALL_ARGS);
+        if (built < 0) {
+            patchlib_method_signature_free(&sig);
+            if (built == -1) return luaL_error(L, "too many method arguments (max %d)", MAX_CALL_ARGS);
+            return luaL_error(L, "method argument type mismatch");
+        }
 
         uint64_t result = 0;
         const bool ok = patchlib_method_invoke_args(method, instance, &result, argv);
@@ -648,7 +713,12 @@ namespace lualoader::lua_api {
         }
         uint64_t storage[MAX_CALL_ARGS][1] = {};
         void *argv[MAX_CALL_ARGS] = {};
-        build_arg_array(L, first_arg, &sig, storage, argv, MAX_CALL_ARGS);
+        const int built = build_arg_array(L, first_arg, &sig, storage, argv, MAX_CALL_ARGS);
+        if (built < 0) {
+            patchlib_method_signature_free(&sig);
+            if (built == -1) return luaL_error(L, "too many constructor arguments (max %d)", MAX_CALL_ARGS);
+            return luaL_error(L, "constructor argument type mismatch");
+        }
         patchlib_method_signature_free(&sig);
 
         patch_handle_t instance = nullptr;
@@ -667,7 +737,8 @@ namespace lualoader::lua_api {
         const patch_handle_t type = to_handle(L, 1);
         const int argc = lua_gettop(L) - 1;
         if (argc <= 0) {
-            push_handle(L, patchlib_type_new_instance(type));
+            // 新实例句柄由 Lua GC 管理，避免 GCHandle 泄漏（与 construct 路径一致）
+            push_owned_handle(L, patchlib_type_new_instance(type));
             return 1;
         }
         if (argc > MAX_CALL_ARGS) {
@@ -1321,9 +1392,9 @@ namespace lualoader::lua_api {
         const patch_handle_t value_type = to_handle(L, 2);
         const size_t capacity = lua_isnoneornil(L, 3)
                                     ? 0 : static_cast<size_t>(luaL_checkinteger(L, 3));
-        push_handle(L, (key_type && value_type)
-                           ? patchlib_dictionary_create(key_type, value_type, capacity)
-                           : nullptr);
+        push_owned_handle(L, (key_type && value_type)
+                                 ? patchlib_dictionary_create(key_type, value_type, capacity)
+                                 : nullptr);
         return 1;
     }
 
@@ -1401,7 +1472,7 @@ namespace lualoader::lua_api {
         const patch_handle_t type = to_handle(L, 1);
         const size_t capacity = lua_isnoneornil(L, 2)
                                     ? 0 : static_cast<size_t>(luaL_checkinteger(L, 2));
-        push_handle(L, type ? patchlib_list_create(capacity, type) : nullptr);
+        push_owned_handle(L, type ? patchlib_list_create(capacity, type) : nullptr);
         return 1;
     }
 
@@ -1572,7 +1643,12 @@ namespace lualoader::lua_api {
         const int argc = static_cast<int>(tefstd_vector_size(&sig.arg_types));
         uint64_t storage[MAX_CALL_ARGS][1] = {};
         void *argv[MAX_CALL_ARGS] = {};
-        build_arg_array(L, arg_start, &sig, storage, argv, MAX_CALL_ARGS);
+        const int built = build_arg_array(L, arg_start, &sig, storage, argv, MAX_CALL_ARGS);
+        if (built < 0) {
+            patchlib_method_signature_free(&sig);
+            if (built == -1) return luaL_error(L, "too many method arguments (max %d)", MAX_CALL_ARGS);
+            return luaL_error(L, "method argument type mismatch");
+        }
 
         // 结构体参数：替换 args[i] 并填 value_args[i]
         patchlib_value_arg_t value_args[MAX_CALL_ARGS] = {};

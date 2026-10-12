@@ -103,6 +103,8 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
         std::string err;
         if (!lua_engine::load(handle, config_path.string(), mod_manifest->private_dir, err)) {
             LOG_ERROR("Failed to load Lua mod {}: {}", handle->mod_id, err);
+            // load 失败时可能已预加载原生库，必须 close 以释放（否则句柄泄漏/残留）
+            lua_engine::close(handle);
             delete handle;
             delete multiplayer_info;
             return ML_ERROR;
@@ -530,8 +532,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            8,
-            "1.4.2",
+            15,
+            "1.6.4",
             1,
             0,
             nullptr,
