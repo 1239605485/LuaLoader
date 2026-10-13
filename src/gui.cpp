@@ -1,5 +1,5 @@
 /*******************************************************************************
- * LuaLoader - gui (Dear ImGui 内置 GUI)
+ * LuaLoader - gui (native Terraria GUI)
  * Copyright (C) 2026 lzup333
  * Author: lzup333
  *
@@ -17,877 +17,1141 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  *******************************************************************************/
 
+// ============================================================================
+// 原生 GUI（不再依赖 Dear ImGui）
+//
+//   PC 端   : XNA / FNA        —— Terraria.Utils.DrawBorderString / DrawInvBG
+//   PE 端   : Unity + XNA 兼容 —— 同一套 SpriteBatch / Utils 接口
+//
+//  说明：
+//   - 保留原有 Lua 接口 mod.gui.*（text/button/checkbox/slider/input_text/...）
+//   - 所有绘制都走游戏自己的 SpriteBatch/字体，不再叠加独立渲染后端
+//   - 每帧在 Terraria.Main.Draw(GameTime) 之后绘制，鼠标使用 Main.mouseX/Y 等
+//     游戏自己的输入状态，因此在各平台表现一致。
+// ============================================================================
+
 #include "gui.hpp"
 
 #include <cctype>
 #include <cfloat>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <filesystem>
-
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
-#if defined(__ANDROID__)
-#include <EGL/egl.h>
-#include <GLES3/gl3.h>
-#endif
-
-#include "imgui.h"
-#include "imgui_impl_opengl3.h"
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "logger.hpp"
 #include "core.hpp"
+#include "lua_engine.hpp"
 
 #include "tefkernel/patchlib/field.h"
 #include "tefkernel/patchlib/method.h"
-#include "tefkernel/patchlib/struct/array.h"
-#include "tefkernel/patchlib/thread.h"
+#include "tefkernel/patchlib/property.h"
+#include "tefkernel/patchlib/struct/string.h"
 #include "tefkernel/patchlib/type.h"
 
 namespace lualoader::gui {
 
     namespace {
-        bool g_ctx_ready = false;
-        bool g_installed = false;
-        float g_ui_scale = 1.0f;       // UI 缩放（高 DPI 手机上放大，避免字太小）
-        float g_font_bake_scale = 1.0f; // 字体图集的烘焙比例（建上下文时确定）
-        ImGuiStyle g_base_style;        // 未缩放的基础样式
 
-        patch_hook_id_t g_draw_hook = PATCH_HOOK_INVALID_ID;
-        patch_handle_t g_f_screen_w = nullptr; // Main.screenWidth  (static int32)
-        patch_handle_t g_f_screen_h = nullptr; // Main.screenHeight (static int32)
+        // ====================================================================
+        // 与托管结构体对应的 POD 镜像
+        // ====================================================================
 
-        // GUI 鼠标模式：true 时输入交给我们（桌面关闭相对模式，Android 无需此概念）
-        bool g_gui_mouse = false;
-        bool g_toggle_prev = false;
+        struct Vec2 {
+            float x, y;
+        };
 
+        // Microsoft.Xna.Framework.Rectangle
+        struct Recti {
+            int x, y, w, h;
+        };
+
+        // Microsoft.Xna.Framework.Color 的内存布局因平台而异：
+        //   - PE(Unity) 打包为 4 字节 A,B,G,R
+        //   - PC(XNA/FNA) 为 R,G,B,A + packedValue（8 字节）
 #if defined(__ANDROID__)
-        // ---- Android：复用内核导出的 Dobby，钩 eglSwapBuffers 做 GLES 叠加渲染 ----
-        using swap_fn = EGLBoolean (*)(EGLDisplay, EGLSurface);
-        swap_fn p_orig_swap = nullptr;
-        int g_surface_w = 0;
-        int g_surface_h = 0;
-        EGLDisplay g_egl_display = EGL_NO_DISPLAY;
-        EGLSurface g_egl_surface = EGL_NO_SURFACE;
-        bool g_in_render = false; // 防重入
-
-        // 触摸输入：主线程经 patchlib 读 UnityEngine.Input.touches
-        patch_handle_t g_input_touches = nullptr; // Input.get_touches -> Touch[]
-        float g_touch_x = 0.0f;                   // Unity 坐标（原点左下）
-        float g_touch_y = 0.0f;
-        bool g_touch_down = false;
+        struct Color {
+            unsigned char a, b, g, r;
+        };
 #else
-        // ---- 桌面：SDL3 函数（运行时 dlsym）----
-        using get_focus_fn = void *(*)();
-        using set_rel_fn = bool (*)(void *, bool);
-        using cursor_fn = bool (*)();
-        using get_keys_fn = const bool *(*)(int *);
-        using get_mouse_fn = uint32_t (*)(float *, float *);
-        using warp_fn = bool (*)(void *, float, float);
-
-        void *g_window = nullptr;
-        get_focus_fn p_get_focus = nullptr;
-        set_rel_fn p_set_rel = nullptr;
-        cursor_fn p_show_cursor = nullptr;
-        cursor_fn p_hide_cursor = nullptr;
-        get_keys_fn p_get_keys = nullptr;
-        get_mouse_fn p_get_mouse = nullptr;
-        warp_fn p_warp = nullptr;
-
-        constexpr int GUI_TOGGLE_SCANCODE = 73; // SDL_SCANCODE_INSERT
+        struct Color {
+            unsigned char r, g, b, a;
+            unsigned int packed;
+        };
 #endif
 
-        void *dsym(const char *n) {
-#if defined(_WIN32)
-            // 先在主模块里找（SDL 若静态链接并导出即可命中），再尝试 SDL3/SDL2.dll
-            if (HMODULE m = GetModuleHandleA(nullptr)) {
-                if (void *p = reinterpret_cast<void *>(GetProcAddress(m, n))) return p;
-            }
-            static HMODULE sdl = nullptr;
-            static bool tried = false;
-            if (!tried) {
-                tried = true;
-                sdl = LoadLibraryA("SDL3.dll");
-                if (!sdl) sdl = LoadLibraryA("SDL2.dll");
-            }
-            if (sdl) {
-                if (void *p = reinterpret_cast<void *>(GetProcAddress(sdl, n))) return p;
-            }
-            return nullptr;
+        void make_color(Color &c, int r, int g, int b, int a) {
+#if defined(__ANDROID__)
+            c.a = static_cast<unsigned char>(a);
+            c.b = static_cast<unsigned char>(b);
+            c.g = static_cast<unsigned char>(g);
+            c.r = static_cast<unsigned char>(r);
 #else
-            return dlsym(RTLD_DEFAULT, n);
+            c.r = static_cast<unsigned char>(r);
+            c.g = static_cast<unsigned char>(g);
+            c.b = static_cast<unsigned char>(b);
+            c.a = static_cast<unsigned char>(a);
+            c.packed = static_cast<unsigned>(r) | (static_cast<unsigned>(g) << 8) |
+                       (static_cast<unsigned>(b) << 16) | (static_cast<unsigned>(a) << 24);
 #endif
         }
 
-#if defined(__ANDROID__)
-        /// 在一个已加载库里按名字找符号（名字可以是 soname；文件被删也能命中）
-        void *dlopen_noload(const char *name) {
-            return name ? dlopen(name, RTLD_NOW | RTLD_NOLOAD) : nullptr;
-        }
+        // ====================================================================
+        // 反射辅助
+        // ====================================================================
 
-        /// 解析已加载库中的符号（兼容内存加载 / 非全局可见 / 文件被删的情况）
-        void *resolve_loaded_symbol(const char *libname, const char *sym) {
-            if (void *p = dlsym(RTLD_DEFAULT, sym)) return p;
-            // 先按 libname / soname 直接 NOLOAD
-            for (const char *n: {libname, "libtefkernel.android.arm64-v8a.so",
-                                 "libtefkernel.android.armeabi-v7a.so"}) {
-                if (void *h = dlopen_noload(n)) {
-                    if (void *s = dlsym(h, sym)) return s;
+        /// 一个字段或（属性）访问器。
+        struct Accessor {
+            patch_handle_t field{nullptr};
+            patch_handle_t getter{nullptr};
+            patch_handle_t setter{nullptr};
+
+            [[nodiscard]] bool valid() const { return field != nullptr || getter != nullptr; }
+        };
+
+        Accessor resolve_accessor(const patch_handle_t type, const char *name) {
+            Accessor a;
+            if (!type || !name) return a;
+            a.field = patchlib_type_get_field(type, name);
+            if (!a.field || !patchlib_is_valid(a.field)) {
+                a.field = nullptr;
+                const patch_handle_t prop = patchlib_type_get_property(type, name);
+                if (prop && patchlib_is_valid(prop)) {
+                    a.getter = patchlib_property_get_get_method(prop);
+                    a.setter = patchlib_property_get_set_method(prop);
                 }
             }
-            if (void *r = dlsym(RTLD_DEFAULT, "DobbySymbolResolver")) {
-                using resolver_fn = void *(*)(const char *, const char *);
-                if (void *p = reinterpret_cast<resolver_fn>(r)(libname, sym)) return p;
+            return a;
+        }
+
+        int read_int(const Accessor &a, const int fallback = 0) {
+            if (a.field) {
+#if defined(__ANDROID__)
+                void *ptr = patchlib_field_get_pointer(a.field, nullptr);
+                if (ptr) return *static_cast<int *>(ptr);
+#else
+                int v = 0;
+                patchlib_field_get_value(a.field, nullptr, &v);
+                return v;
+#endif
             }
-            // 再退一步：从 /proc/self/maps 找到库路径后 dlopen(RTLD_NOLOAD)
-            if (FILE *f = fopen("/proc/self/maps", "r")) {
-                char line[4096];
-                while (fgets(line, sizeof(line), f)) {
-                    if (!strstr(line, libname)) continue;
-                    char *path = strrchr(line, '/');
-                    if (!path) continue;
-                    if (char *nl = strchr(path, '\n')) *nl = '\0';
-                    if (char *del = strstr(path, " (deleted)")) *del = '\0';
-                    if (void *h = dlopen(path, RTLD_NOW | RTLD_NOLOAD)) {
-                        if (void *s = dlsym(h, sym)) {
-                            fclose(f);
-                            return s;
-                        }
+            if (a.getter) {
+                int v = 0;
+                patchlib_method_invoke_args(a.getter, nullptr, &v, nullptr);
+                return v;
+            }
+            return fallback;
+        }
+
+        bool read_bool(const Accessor &a, const bool fallback = false) {
+            if (a.field) {
+#if defined(__ANDROID__)
+                void *ptr = patchlib_field_get_pointer(a.field, nullptr);
+                if (ptr) return *static_cast<unsigned char *>(ptr) != 0;
+#else
+                unsigned char v = 0;
+                patchlib_field_get_value(a.field, nullptr, &v);
+                return v != 0;
+#endif
+            }
+            if (a.getter) {
+                bool v = false;
+                patchlib_method_invoke_args(a.getter, nullptr, &v, nullptr);
+                return v;
+            }
+            return fallback;
+        }
+
+        void write_bool(const Accessor &a, const bool value) {
+            const unsigned char b = value ? 1 : 0;
+            if (a.field) {
+#if defined(__ANDROID__)
+                void *ptr = patchlib_field_get_pointer(a.field, nullptr);
+                if (ptr) *static_cast<unsigned char *>(ptr) = b;
+#else
+                patchlib_field_set_value(a.field, nullptr, const_cast<unsigned char *>(&b));
+#endif
+            } else if (a.setter) {
+                void *args[1] = {const_cast<unsigned char *>(&b)};
+                patchlib_method_invoke_args(a.setter, nullptr, nullptr, args);
+            }
+        }
+
+        patch_handle_t read_static_object(const patch_handle_t field) {
+            if (!field) return nullptr;
+#if defined(__ANDROID__)
+            void *ptr = patchlib_field_get_pointer(field, nullptr);
+            return ptr ? *static_cast<patch_handle_t *>(ptr) : nullptr;
+#else
+            patch_handle_t v = nullptr;
+            patchlib_field_get_value(field, nullptr, &v);
+            return v;
+#endif
+        }
+
+        patch_handle_t get_method(const patch_handle_t type, const char *name, const int argc) {
+            if (!type || !name) return nullptr;
+            patch_handle_t m = patchlib_type_get_method_by_param_count(type, name, argc);
+            if (!m || !patchlib_is_valid(m)) m = nullptr;
+            return m;
+        }
+
+        // ====================================================================
+        // 游戏绘制接口缓存
+        // ====================================================================
+
+        struct Gfx {
+            bool ready{false};
+            bool usable{false};
+
+            patch_handle_t t_main{nullptr};
+            patch_handle_t f_sprite_batch{nullptr};
+
+            patch_handle_t m_sb_begin{nullptr};
+            patch_handle_t m_sb_end{nullptr};
+            int sb_begin_args{0};
+
+            patch_handle_t m_draw_inv_bg{nullptr};     // Utils.DrawInvBG(SpriteBatch,Rectangle,Color)
+            patch_handle_t m_draw_border_string{nullptr}; // Utils.DrawBorderString(...)
+            patch_handle_t m_draw_pending_mouse_text{nullptr}; // Main.DrawPendingMouseText(...)
+            patch_handle_t m_draw_cursor{nullptr};             // Main.DrawInterface_36_Cursor()
+
+            Accessor a_screen_w, a_screen_h;
+            Accessor a_mouse_x, a_mouse_y;
+            Accessor a_mouse_left, a_mouse_left_release, a_mouse_right;
+            Accessor a_show_splash;
+        };
+
+        Gfx g_gfx;
+        patch_handle_t g_sb{nullptr}; // 当前帧的 spriteBatch
+
+        /// 读取布尔环境变量（"0"/空 视为 false）
+        bool env_flag(const char *name) {
+            const char *v = std::getenv(name);
+            return v && v[0] != '\0' && v[0] != '0';
+        }
+
+        void resolve_gfx() {
+            if (g_gfx.ready) return;
+            g_gfx.ready = true;
+
+            g_gfx.t_main = patchlib_type_get_type("Terraria", "Main");
+            if (g_gfx.t_main) {
+                g_gfx.f_sprite_batch = patchlib_type_get_field(g_gfx.t_main, "spriteBatch");
+                if (g_gfx.f_sprite_batch && !patchlib_is_valid(g_gfx.f_sprite_batch))
+                    g_gfx.f_sprite_batch = nullptr;
+
+                g_gfx.a_screen_w = resolve_accessor(g_gfx.t_main, "screenWidth");
+                g_gfx.a_screen_h = resolve_accessor(g_gfx.t_main, "screenHeight");
+                g_gfx.a_mouse_x = resolve_accessor(g_gfx.t_main, "mouseX");
+                g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
+                g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");
+                g_gfx.a_mouse_left_release = resolve_accessor(g_gfx.t_main, "mouseLeftRelease");
+                g_gfx.a_mouse_right = resolve_accessor(g_gfx.t_main, "mouseRight");
+                g_gfx.a_show_splash = resolve_accessor(g_gfx.t_main, "showSplash");
+                // 顶层 UI（物品 tooltip + 鼠标光标）绘制入口，用于把游戏光标压在我们窗口之上
+                g_gfx.m_draw_pending_mouse_text = get_method(g_gfx.t_main, "DrawPendingMouseText", 0);
+                if (!g_gfx.m_draw_pending_mouse_text)
+                    g_gfx.m_draw_pending_mouse_text = get_method(g_gfx.t_main, "DrawPendingMouseText", 1);
+                g_gfx.m_draw_cursor = get_method(g_gfx.t_main, "DrawInterface_36_Cursor", 0);
+            }
+
+            const patch_handle_t t_sb =
+                    patchlib_type_get_type("Microsoft.Xna.Framework.Graphics", "SpriteBatch");
+            if (t_sb) {
+                g_gfx.m_sb_begin = get_method(t_sb, "Begin", 0);
+                if (g_gfx.m_sb_begin) {
+                    g_gfx.sb_begin_args = 0;
+                } else {
+                    g_gfx.m_sb_begin = get_method(t_sb, "Begin", 2);
+                    g_gfx.sb_begin_args = 2;
+                    if (!g_gfx.m_sb_begin) {
+                        g_gfx.m_sb_begin = get_method(t_sb, "Begin", 8);
+                        g_gfx.sb_begin_args = 8;
                     }
                 }
-                fclose(f);
+                g_gfx.m_sb_end = get_method(t_sb, "End", 0);
             }
-            return nullptr;
+
+            const patch_handle_t t_utils = patchlib_type_get_type("Terraria", "Utils");
+            if (t_utils) {
+                g_gfx.m_draw_inv_bg = get_method(t_utils, "DrawInvBG", 3);
+                g_gfx.m_draw_border_string = get_method(t_utils, "DrawBorderString", 8);
+            }
+
+            g_gfx.usable = g_gfx.f_sprite_batch && g_gfx.m_sb_begin && g_gfx.m_sb_end &&
+                           g_gfx.m_draw_inv_bg && g_gfx.m_draw_border_string;
+
+            LOG_INFO("[gui] native GUI backend: spriteBatch={} begin={} end={} invBG={} text={} showSplash={} usable={}",
+                     reinterpret_cast<void *>(g_gfx.f_sprite_batch),
+                     reinterpret_cast<void *>(g_gfx.m_sb_begin),
+                     reinterpret_cast<void *>(g_gfx.m_sb_end),
+                     reinterpret_cast<void *>(g_gfx.m_draw_inv_bg),
+                     reinterpret_cast<void *>(g_gfx.m_draw_border_string),
+                     g_gfx.a_show_splash.valid(),
+                     g_gfx.usable);
         }
-#endif
+
+        // ====================================================================
+        // 绘制原语
+        // ====================================================================
+
+        // --------------------------------------------------------------------
+        // 绘制指令队列：mod.gui.* 只记录指令，等 on_gui 返回后在 C++ 里统一执行。
+        // 原因：托管绘制方法（Utils.*）在 Android 上抛出的异常是 il2cpp 的 C++
+        // 异常；若在 Lua 回调内直接调用，异常会穿过 Lua VM 的 setjmp 帧导致
+        // std::terminate/abort。放到 Lua 之外执行即可规避。
+        // --------------------------------------------------------------------
+        struct DrawCmd {
+            enum Kind { RECT, TEXT } kind;
+            float x, y, w, h; // RECT 用 w/h；TEXT 用 scale
+            Color col;
+            std::string text;
+            float scale;
+        };
+
+        std::vector<DrawCmd> g_cmds;
+        bool g_recording = false;
 
 #if defined(__ANDROID__)
-        /// 采样 Unity 触摸（在主线程 Main.Draw 后置里调用）
-        /// Touch 结构布局（UnityEngine.Touch，取自 dump）：
-        ///   +0x4 Vector2.position, +0x24 TouchPhase
-        void sample_input() {
-            auto clear = [] {
-                g_touch_down = false;
-                g_touch_x = -FLT_MAX;
-                g_touch_y = -FLT_MAX;
-            };
-            if (!g_input_touches) {
-                clear();
-                return;
-            }
-            patch_handle_t arr = nullptr;
-            if (!patchlib_method_invoke_args(g_input_touches, nullptr, &arr, nullptr) || !arr) {
-                clear();
-                return;
-            }
-            const size_t n = patchlib_array_length(arr);
-            if (n == 0) {
-                clear();
-                return;
-            }
-            unsigned char elem[0x48] = {};
-            if (!patchlib_array_at(arr, 0, elem)) {
-                clear();
-                return;
-            }
-            g_touch_x = *reinterpret_cast<const float *>(elem + 0x4);
-            g_touch_y = *reinterpret_cast<const float *>(elem + 0x8);
-            const int phase = *reinterpret_cast<const int *>(elem + 0x24);
-            // Began=0, Moved=1, Stationary=2, Ended=3, Canceled=4
-            g_touch_down = (phase == 0 || phase == 1 || phase == 2);
-        }
+        // Android 兜底：内核 patchlib 的按值结构体 FFI 编组在含静态字段的结构体
+        // （Vector2/Color/Rectangle 都有）上会生成错误的 ffi_type，导致托管方法
+        // 收到错位参数并抛异常（→ std::terminate → SIGABRT）。
+        // 这里直接用原生函数指针按正确的 C ABI 调用，绕开 patch_type_to_ffi_type。
+        // 详见 TEFKernel/documents/patchlib-ffi-struct-bug.md。
+        using FnDrawInvBG = void (*)(void *sb, Recti r, Color c);
+        using FnDrawString = Vec2 (*)(void *sb, void *text, Vec2 pos, Color color,
+                                      float scale, float ax, float ay, int32_t max_chars);
 #endif
 
-        void screen_size(int &w, int &h) {
+        void exec_rect(const float x, const float y, const float w, const float h, const Color &c) {
+            if (!g_gfx.m_draw_inv_bg || !g_sb || w <= 0 || h <= 0) return;
+            Recti r{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
+            Color col = c;
 #if defined(__ANDROID__)
-            w = g_surface_w > 0 ? g_surface_w : 1280;
-            h = g_surface_h > 0 ? g_surface_h : 720;
+            auto fn = reinterpret_cast<FnDrawInvBG>(patchlib_method_get_pointer(g_gfx.m_draw_inv_bg));
+            if (fn) fn(g_sb, r, col);
 #else
-            w = 1280;
-            h = 720;
-            if (g_f_screen_w) {
-                int v = 0;
-                patchlib_field_get_value(g_f_screen_w, nullptr, &v);
-                if (v > 0) w = v;
-            }
-            if (g_f_screen_h) {
-                int v = 0;
-                patchlib_field_get_value(g_f_screen_h, nullptr, &v);
-                if (v > 0) h = v;
-            }
+            void *args[3] = {&g_sb, &r, &col};
+            patchlib_method_invoke_args(g_gfx.m_draw_inv_bg, nullptr, nullptr, args);
 #endif
         }
 
-#if !defined(__ANDROID__)
-        /// 把指针移到屏幕中心（相对模式/绝对模式切换时避免卡在 (0,0)）
-        void warp_to_center() {
-            if (!p_warp || !g_window) return;
-            int w = 0, h = 0;
-            screen_size(w, h);
-            p_warp(g_window, static_cast<float>(w) / 2.0f, static_cast<float>(h) / 2.0f);
+        void exec_string(const float x, const float y, const char *text, const Color &c, const float scale) {
+            if (!g_gfx.m_draw_border_string || !g_sb || !text || !*text) return;
+            patch_handle_t str = patchlib_string_create(text);
+            if (!str) return;
+            Vec2 pos{x, y};
+            Color col = c;
+#if defined(__ANDROID__)
+            auto fn = reinterpret_cast<FnDrawString>(patchlib_method_get_pointer(g_gfx.m_draw_border_string));
+            if (fn) fn(g_sb, str, pos, col, scale, 0.0f, 0.0f, -1);
+#else
+            float ax = 0.0f, ay = 0.0f;
+            int max_chars = -1;
+            float fscale = scale;
+            void *args[8] = {&g_sb, &str, &pos, &col, &fscale, &ax, &ay, &max_chars};
+            patchlib_method_invoke_args(g_gfx.m_draw_border_string, nullptr, nullptr, args);
+#endif
+            patchlib_free(str);
         }
 
-        void resolve_sdl() {
-            if (!p_get_focus) p_get_focus = reinterpret_cast<get_focus_fn>(dsym("SDL_GetKeyboardFocus"));
-            if (!p_set_rel) p_set_rel = reinterpret_cast<set_rel_fn>(dsym("SDL_SetWindowRelativeMouseMode"));
-            if (!p_show_cursor) p_show_cursor = reinterpret_cast<cursor_fn>(dsym("SDL_ShowCursor"));
-            if (!p_hide_cursor) p_hide_cursor = reinterpret_cast<cursor_fn>(dsym("SDL_HideCursor"));
-            if (!p_get_keys) p_get_keys = reinterpret_cast<get_keys_fn>(dsym("SDL_GetKeyboardState"));
-            if (!p_get_mouse) p_get_mouse = reinterpret_cast<get_mouse_fn>(dsym("SDL_GetMouseState"));
-            if (!p_warp) p_warp = reinterpret_cast<warp_fn>(dsym("SDL_WarpMouseInWindow"));
-            if (!g_window && p_get_focus) g_window = p_get_focus();
-        }
-
-        /// 热键切换 GUI 鼠标模式
-        void poll_toggle() {
-            if (!p_get_keys || !g_window) return;
-            const bool *keys = p_get_keys(nullptr);
-            if (!keys) return;
-            const bool down = keys[GUI_TOGGLE_SCANCODE];
-            if (down && !g_toggle_prev) {
-                g_gui_mouse = !g_gui_mouse;
-                if (g_gui_mouse) {
-                    p_set_rel(g_window, false); // 关闭相对模式，释放鼠标
-                    warp_to_center();
-                    if (p_show_cursor) p_show_cursor();
+        /// 执行当前记录的所有指令（必须在 Lua 回调之外调用）
+        void flush_cmds() {
+            for (const DrawCmd &cmd: g_cmds) {
+                if (cmd.kind == DrawCmd::RECT) {
+                    exec_rect(cmd.x, cmd.y, cmd.w, cmd.h, cmd.col);
                 } else {
-                    warp_to_center();           // 先居中，再回相对模式，避免卡左上角
-                    p_set_rel(g_window, true);  // 还给游戏
-                    if (p_hide_cursor) p_hide_cursor();
+                    exec_string(cmd.x, cmd.y, cmd.text.c_str(), cmd.col, cmd.scale);
                 }
-                LOG_INFO("[gui] mouse {} (press Insert to toggle)", g_gui_mouse ? "released" : "recaptured");
             }
-            g_toggle_prev = down;
+            g_cmds.clear();
         }
-#endif
 
-        // ---- 键盘：轮询 SDL 按键状态并转成 ImGui 事件（无需 hook SDL）----
-        constexpr int NUM_SCANCODES = 512; // SDL_NUM_SCANCODES
-        bool g_key_prev[NUM_SCANCODES] = {};
-        bool g_mod_prev[4] = {};
+        void draw_rect(const float x, const float y, const float w, const float h, const Color &c) {
+            if (g_recording) {
+                g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, c, {}, 0.0f});
+                return;
+            }
+            exec_rect(x, y, w, h, c);
+        }
 
-        // ---- 自绘文本输入 + 虚拟键盘 ----
-        // 不使用 ImGui::InputText：否则点击虚拟键盘按钮会切换 ImGui 的 active id，
-        // 导致输入框失焦。这里自己维护“正在编辑哪个框”和缓冲区。
-        constexpr int VKB_BUF_SIZE = 256;
-        const void *g_edit_id = nullptr;      // 正在编辑的输入框（ImGuiID）
-        char g_edit_buf[VKB_BUF_SIZE] = {};   // 编辑缓冲
-        bool g_vkb_shift = false;             // 大小写锁定
+        void draw_string(const float x, const float y, const char *text, const Color &c,
+                         const float scale = 1.0f) {
+            if (!text || !*text) return;
+            if (g_recording) {
+                g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, c, text, scale});
+                return;
+            }
+            exec_string(x, y, text, c, scale);
+        }
 
-        void vkb_append_char(char c) {
-            const size_t len = std::strlen(g_edit_buf);
-            if (len + 1 < sizeof(g_edit_buf)) {
-                g_edit_buf[len] = c;
-                g_edit_buf[len + 1] = '\0';
+        void sb_begin() {
+            if (!g_gfx.m_sb_begin || !g_sb) return;
+            if (g_gfx.sb_begin_args == 0) {
+                patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, nullptr);
+            } else if (g_gfx.sb_begin_args == 2) {
+                int sort_mode = 0; // SpriteSortMode.Deferred
+                unsigned char deferred = 1;
+                void *args[2] = {&sort_mode, &deferred};
+                patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
+            } else {
+                int sort_mode = 0;
+                void *null_obj = nullptr;
+                unsigned char deferred = 1;
+                void *args[8] = {&sort_mode, &null_obj, &null_obj, &null_obj,
+                                 &null_obj, &null_obj, &null_obj, &deferred};
+                patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
             }
         }
 
-        void vkb_backspace() {
-            const size_t len = std::strlen(g_edit_buf);
-            if (len > 0) g_edit_buf[len - 1] = '\0';
+        void sb_end() {
+            if (!g_gfx.m_sb_end || !g_sb) return;
+            patchlib_method_invoke_args(g_gfx.m_sb_end, g_sb, nullptr, nullptr);
         }
+
+        // ====================================================================
+        // 屏幕尺寸 / UI 缩放 / 输入
+        // ====================================================================
+
+        int g_screen_w = 1280;
+        int g_screen_h = 720;
+        float g_scale = 1.0f;
+
+        float g_mouse_x = -FLT_MAX;
+        float g_mouse_y = -FLT_MAX;
+        bool g_mouse_down = false;
+        bool g_mouse_pressed = false;
+        bool g_mouse_released = false;
+        bool g_prev_mouse_down = false;
+        bool g_hover_gui = false;
+
+        void update_screen_size() {
+            const int w = read_int(g_gfx.a_screen_w, 0);
+            const int h = read_int(g_gfx.a_screen_h, 0);
+            if (w > 0) g_screen_w = w;
+            if (h > 0) g_screen_h = h;
+            int mn = g_screen_w < g_screen_h ? g_screen_w : g_screen_h;
+            if (mn <= 0) mn = 720;
+            float s = static_cast<float>(mn) / 720.0f;
+            if (s < 1.0f) s = 1.0f;
+            if (s > 2.5f) s = 2.5f;
+            g_scale = s;
+        }
+
+        void update_input() {
+            g_mouse_x = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
+            g_mouse_y = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
+            g_mouse_down = read_bool(g_gfx.a_mouse_left, false);
+            g_mouse_pressed = g_mouse_down && !g_prev_mouse_down;
+            g_mouse_released = !g_mouse_down && g_prev_mouse_down;
+            g_prev_mouse_down = g_mouse_down;
+        }
+
+        bool mouse_in(const float x, const float y, const float w, const float h) {
+            if (g_mouse_x == -FLT_MAX) return false;
+            return g_mouse_x >= x && g_mouse_x <= x + w && g_mouse_y >= y && g_mouse_y <= y + h;
+        }
+
+        // ====================================================================
+        // 文本宽度估算（MouseText 字体约 20px）
+        // ====================================================================
+
+        /// 前进一个 UTF-8 字符，返回该字符占用字节数。
+        size_t utf8_next(const char *s) {
+            const unsigned char c = static_cast<unsigned char>(s[0]);
+            size_t len = 1;
+            if ((c & 0x80) == 0x00) len = 1;
+            else if ((c & 0xE0) == 0xC0) len = 2;
+            else if ((c & 0xF0) == 0xE0) len = 3;
+            else if ((c & 0xF8) == 0xF0) len = 4;
+            for (size_t i = 1; i < len; ++i) {
+                if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) return i;
+            }
+            return len;
+        }
+
+        float text_width(const char *s, const float scale = 1.0f) {
+            if (!s) return 0.0f;
+            float w = 0.0f;
+            for (const char *p = s; *p;) {
+                const size_t n = utf8_next(p);
+                w += (n == 1) ? 10.0f : 20.0f; // ASCII 半角 / 多字节全角
+                p += n;
+            }
+            return w * g_scale * scale;
+        }
+
+        // ====================================================================
+        // 颜色表（Terraria 风格深色面板）
+        // ====================================================================
+
+        const Color kText = [] {
+            Color c;
+            make_color(c, 230, 230, 230, 255);
+            return c;
+        }();
+        const Color kTextDim = [] {
+            Color c;
+            make_color(c, 170, 175, 190, 255);
+            return c;
+        }();
+        const Color kPanel = [] {
+            Color c;
+            make_color(c, 23, 25, 81, 235);
+            return c;
+        }();
+        const Color kTitle = [] {
+            Color c;
+            make_color(c, 50, 60, 110, 255);
+            return c;
+        }();
+        const Color kBtn = [] {
+            Color c;
+            make_color(c, 45, 55, 95, 255);
+            return c;
+        }();
+        const Color kBtnHover = [] {
+            Color c;
+            make_color(c, 70, 90, 150, 255);
+            return c;
+        }();
+        const Color kBtnActive = [] {
+            Color c;
+            make_color(c, 100, 130, 200, 255);
+            return c;
+        }();
+        const Color kTrack = [] {
+            Color c;
+            make_color(c, 15, 15, 30, 255);
+            return c;
+        }();
+        const Color kFill = [] {
+            Color c;
+            make_color(c, 120, 160, 230, 255);
+            return c;
+        }();
+        const Color kWhite = [] {
+            Color c;
+            make_color(c, 255, 255, 255, 255);
+            return c;
+        }();
+        const Color kBorder = [] {
+            Color c;
+            make_color(c, 12, 14, 34, 255);
+            return c;
+        }();
+        const Color kTrackEdge = [] {
+            Color c;
+            make_color(c, 6, 8, 20, 255);
+            return c;
+        }();
+
+        // ====================================================================
+        // 布局
+        // ====================================================================
+
+        constexpr float PAD = 12.0f;
+        constexpr float TITLE_H = 32.0f;
+        constexpr float ITEM_GAP = 12.0f;
+
+        float line_height() { return 28.0f * g_scale; }
+        float button_height() { return 32.0f * g_scale; }
+        float item_gap() { return ITEM_GAP * g_scale; }
+        float pad() { return PAD * g_scale; }
+        float title_height() { return TITLE_H * g_scale; }
+
+        struct Ctx {
+            float ox{0}, oy{0};   // 内容原点
+            float cw{0};          // 内容宽度
+            float cx{0}, cy{0};   // 当前光标（相对内容原点）
+            float prev_h{0};
+            bool same_line{false};
+        };
+
+        Ctx *g_ctx = nullptr;
+        std::string g_current_mod;
+
+        void place(float &x, float &y, const float w, const float h) {
+            if (!g_ctx->same_line) {
+                g_ctx->cx = 0.0f;
+                g_ctx->cy += g_ctx->prev_h;
+                if (g_ctx->prev_h > 0.0f) g_ctx->cy += 4.0f * g_scale; // 行间留白
+                g_ctx->prev_h = 0.0f;
+            }
+            g_ctx->same_line = false;
+            x = g_ctx->ox + g_ctx->cx;
+            y = g_ctx->oy + g_ctx->cy;
+            g_ctx->cx += w + item_gap();
+            if (h > g_ctx->prev_h) g_ctx->prev_h = h;
+        }
+
+        void advance_line() {
+            g_ctx->cx = 0.0f;
+            g_ctx->cy += g_ctx->prev_h;
+            if (g_ctx->prev_h > 0.0f) g_ctx->cy += 4.0f * g_scale;
+            g_ctx->prev_h = 0.0f;
+            g_ctx->same_line = false;
+        }
+
+        // ====================================================================
+        // 每个 Mod 的窗口状态
+        // ====================================================================
+
+        struct WindowState {
+            float x{40}, y{40};
+            float w{380}, h{160};
+            bool visible{true};   ///< 是否显示（Mod 可控制出现/消失）
+            int order{0};
+        };
+
+        std::unordered_map<std::string, WindowState> g_windows;
+
+        std::string g_drag_id;
+        float g_drag_dx = 0.0f, g_drag_dy = 0.0f;
+
+        std::string g_slider_active;
+        std::unordered_map<std::string, bool> g_headers;
+
+        // 文本输入状态
+        struct EditState {
+            bool active{false};
+            std::string owner;
+            std::string buf;
+            bool shift{false};
+        };
+        EditState g_edit;
 
         void draw_virtual_keyboard();
 
-#if !defined(__ANDROID__)
-        const ImGuiKey k_mod_keys[4] = {ImGuiMod_Ctrl, ImGuiMod_Shift, ImGuiMod_Alt, ImGuiMod_Super};
+        // ====================================================================
+        // 绘制单个 Mod 的窗口
+        // ====================================================================
 
-        /// SDL scancode -> ImGuiKey（覆盖常用键；数值取自 SDL3 固定枚举）
-        ImGuiKey map_scancode(int sc) {
-            if (sc >= 4 && sc <= 29) return static_cast<ImGuiKey>(ImGuiKey_A + (sc - 4)); // A-Z
-            if (sc >= 30 && sc <= 39) { // 1-9,0
-                if (sc == 39) return ImGuiKey_0;
-                return static_cast<ImGuiKey>(ImGuiKey_1 + (sc - 30));
-            }
-            if (sc >= 58 && sc <= 69) return static_cast<ImGuiKey>(ImGuiKey_F1 + (sc - 58)); // F1-F12
-            switch (sc) {
-                case 40: return ImGuiKey_Enter;
-                case 41: return ImGuiKey_Escape;
-                case 42: return ImGuiKey_Backspace;
-                case 43: return ImGuiKey_Tab;
-                case 44: return ImGuiKey_Space;
-                case 45: return ImGuiKey_Minus;
-                case 46: return ImGuiKey_Equal;
-                case 47: return ImGuiKey_LeftBracket;
-                case 48: return ImGuiKey_RightBracket;
-                case 49: return ImGuiKey_Backslash;
-                case 51: return ImGuiKey_Semicolon;
-                case 52: return ImGuiKey_Apostrophe;
-                case 53: return ImGuiKey_GraveAccent;
-                case 54: return ImGuiKey_Comma;
-                case 55: return ImGuiKey_Period;
-                case 56: return ImGuiKey_Slash;
-                case 57: return ImGuiKey_CapsLock;
-                case 73: return ImGuiKey_Insert;
-                case 74: return ImGuiKey_Home;
-                case 75: return ImGuiKey_PageUp;
-                case 76: return ImGuiKey_Delete;
-                case 77: return ImGuiKey_End;
-                case 78: return ImGuiKey_PageDown;
-                case 79: return ImGuiKey_RightArrow;
-                case 80: return ImGuiKey_LeftArrow;
-                case 81: return ImGuiKey_DownArrow;
-                case 82: return ImGuiKey_UpArrow;
-                case 224: return ImGuiKey_LeftCtrl;
-                case 225: return ImGuiKey_LeftShift;
-                case 226: return ImGuiKey_LeftAlt;
-                case 227: return ImGuiKey_LeftSuper;
-                case 228: return ImGuiKey_RightCtrl;
-                case 229: return ImGuiKey_RightShift;
-                case 230: return ImGuiKey_RightAlt;
-                case 231: return ImGuiKey_RightSuper;
-                default: return ImGuiKey_None;
-            }
-        }
+        void draw_mod_gui(lua_mod_handle_t *h) {
+            if (!h || h->gui_ref == LUA_NOREF) return;
 
-        /// scancode -> 可输入字符（ASCII；需要 shift/caps 判断大小写）
-        int scancode_to_char(int sc, bool shift, bool caps) {
-            if (sc >= 4 && sc <= 29) { // 字母
-                char c = static_cast<char>('a' + (sc - 4));
-                return (shift != caps) ? (c - 32) : c;
-            }
-            if (sc >= 30 && sc <= 39) { // 数字及上档符号
-                static const char *normal = "1234567890";
-                static const char *shifted = "!@#$%^&*()";
-                return shift ? shifted[sc - 30] : normal[sc - 30];
-            }
-            switch (sc) {
-                case 44: return ' ';
-                case 45: return shift ? '_' : '-';
-                case 46: return shift ? '+' : '=';
-                case 47: return shift ? '{' : '[';
-                case 48: return shift ? '}' : ']';
-                case 49: return shift ? '|' : '\\';
-                case 51: return shift ? ':' : ';';
-                case 52: return shift ? '"' : '\'';
-                case 53: return shift ? '~' : '`';
-                case 54: return shift ? '<' : ',';
-                case 55: return shift ? '>' : '.';
-                case 56: return shift ? '?' : '/';
-                default: return 0;
-            }
-        }
+            WindowState &ws = g_windows[h->mod_id];
 
-        /// 每帧在 ImGui::NewFrame 之前调用；仅在 GUI 鼠标模式下把键盘交给 ImGui
-        void poll_keyboard() {
-            if (!p_get_keys) return;
-            ImGuiIO &io = ImGui::GetIO();
-            const bool *keys = p_get_keys(nullptr);
-            if (!keys) return;
-
-            if (!g_gui_mouse) {
-                // 离开 GUI 输入模式：把仍按下的键释放掉，避免 ImGui 卡住
-                for (int sc = 0; sc < NUM_SCANCODES; ++sc) {
-                    if (!g_key_prev[sc]) continue;
-                    const ImGuiKey k = map_scancode(sc);
-                    if (k != ImGuiKey_None) io.AddKeyEvent(k, false);
-                    g_key_prev[sc] = false;
-                }
-                for (int i = 0; i < 4; ++i) {
-                    if (!g_mod_prev[i]) continue;
-                    io.AddKeyEvent(k_mod_keys[i], false);
-                    g_mod_prev[i] = false;
-                }
+            // 隐藏时：仍然回调 on_gui（Mod 可在此把自己设回显示），但不绘制、不响应输入
+            if (!ws.visible) {
+                g_ctx = nullptr;
+                g_current_mod = h->mod_id;
+                g_recording = true;
+                g_cmds.clear();
+                lua_engine::call_on_gui(h);
+                g_recording = false;
+                g_current_mod.clear();
+                g_cmds.clear();
                 return;
             }
 
-            const bool shift = keys[225] || keys[229];
-            const bool caps = keys[57];
-            for (int sc = 0; sc < NUM_SCANCODES; ++sc) {
-                const bool down = keys[sc];
-                if (down == g_key_prev[sc]) continue;
-                g_key_prev[sc] = down;
-                const ImGuiKey k = map_scancode(sc);
-                if (k != ImGuiKey_None) io.AddKeyEvent(k, down);
-                if (down) {
-                    const int c = scancode_to_char(sc, shift, caps);
-                    if (c) io.AddInputCharacter(static_cast<unsigned int>(c));
-                }
-            }
-            const bool mods[4] = {
-                    keys[224] || keys[228], // Ctrl
-                    keys[225] || keys[229], // Shift
-                    keys[226] || keys[230], // Alt
-                    keys[227] || keys[231], // Super
-            };
-            for (int i = 0; i < 4; ++i) {
-                if (mods[i] == g_mod_prev[i]) continue;
-                io.AddKeyEvent(k_mod_keys[i], mods[i]);
-                g_mod_prev[i] = mods[i];
-            }
-        }
-#endif // !__ANDROID__
+            const float p = pad();
+            const float th = title_height();
 
-        /// 屏幕虚拟键盘（底部居中）：点键直接改 g_edit_buf，手机端友好
+            // 外边框 + 背景 + 标题栏（用上一帧的尺寸，首帧用默认值）
+            draw_rect(ws.x - 2.0f, ws.y - 2.0f, ws.w + 4.0f, ws.h + 4.0f, kBorder);
+            draw_rect(ws.x, ws.y, ws.w, ws.h, kPanel);
+            draw_rect(ws.x, ws.y, ws.w, th, kTitle);
+            draw_rect(ws.x, ws.y + th - 1.0f, ws.w, 1.0f, kBorder); // 标题栏分隔线
+            draw_string(ws.x + p, ws.y + (th - line_height()) * 0.5f, h->mod_id.c_str(), kWhite, 1.0f);
+
+            const bool title_hovered = mouse_in(ws.x, ws.y, ws.w, th);
+            if (title_hovered) g_hover_gui = true;
+            if (title_hovered && g_mouse_pressed && g_drag_id.empty()) {
+                g_drag_id = h->mod_id;
+                g_drag_dx = g_mouse_x - ws.x;
+                g_drag_dy = g_mouse_y - ws.y;
+            }
+            if (!g_drag_id.empty() && g_drag_id == h->mod_id && g_mouse_down) {
+                ws.x = g_mouse_x - g_drag_dx;
+                ws.y = g_mouse_y - g_drag_dy;
+            }
+
+            // 内容：先记录指令（在 Lua 回调内不能直接调托管绘制），
+            // 回调返回后再离开 Lua VM 统一执行。
+            Ctx ctx;
+            ctx.ox = ws.x + p;
+            ctx.oy = ws.y + th + p * 0.5f;
+            ctx.cw = ws.w - p * 2.0f;
+            g_ctx = &ctx;
+            g_current_mod = h->mod_id;
+            g_cmds.clear();
+            g_recording = true;
+            lua_engine::call_on_gui(h);
+            g_recording = false;
+            g_current_mod.clear();
+            g_ctx = nullptr;
+            flush_cmds();
+
+            const float content_h = ctx.cy + ctx.prev_h;
+            ws.h = th + p + content_h + p;
+        }
+
+        // ====================================================================
+        // 虚拟键盘（文本输入）
+        // ====================================================================
+
+        const char *const kRow1 = "1234567890";
+        const char *const kRow2 = "qwertyuiop";
+        const char *const kRow3 = "asdfghjkl";
+        const char *const kRow4 = "zxcvbnm";
+
+        void vkb_append(const char c) {
+            g_edit.buf.push_back(c);
+        }
+
+        /// 画一个方块按键（带边框 + 居中文字）
+        void draw_key_box(const float x, const float y, const float w, const float h, const char *label,
+                          const bool hovered) {
+            const float g1 = 1.0f * g_scale;
+            draw_rect(x, y, w, h, kTrackEdge);
+            draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1, hovered ? kBtnHover : kBtn);
+            draw_string(x + (w - text_width(label)) * 0.5f, y + (h - line_height()) * 0.5f, label,
+                        kWhite, 1.0f);
+        }
+
+        void draw_key(const float x, const float y, const float w, const float h, const char *label,
+                      const char out, bool &consumed) {
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            if (hovered && g_mouse_released) {
+                vkb_append(out);
+                consumed = true;
+            }
+            draw_key_box(x, y, w, h, label, hovered);
+        }
+
         void draw_virtual_keyboard() {
-            ImGuiIO &io = ImGui::GetIO();
-            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - 10.0f),
-                                    ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-            ImGui::SetNextWindowBgAlpha(0.88f);
-            const ImGuiWindowFlags flags =
-                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize |
-                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                    ImGuiWindowFlags_NoNav;
-            ImGui::Begin("##lualoader_vkb", nullptr, flags);
+            const float key = 34.0f * g_scale;
+            const float wide = 56.0f * g_scale;
+            const float gap = 4.0f * g_scale;
+            const float pd = 10.0f * g_scale;
 
-            const ImVec2 key(34 * g_ui_scale, 34 * g_ui_scale);
-            const ImVec2 wide(58 * g_ui_scale, 34 * g_ui_scale);
+            // 各行内容宽度
+            const float w_num = 10.0f * key + 9.0f * gap;
+            const float w_qwe = 10.0f * key + 9.0f * gap;
+            const float w_asd = 9.0f * key + 8.0f * gap;
+            const float w_fun = wide + gap + 7.0f * key + 6.0f * gap + gap + wide;
+            const float w_spc = 6.0f * key + gap + 3.0f * key;
+            float inner = w_num;
+            if (w_qwe > inner) inner = w_qwe;
+            if (w_asd > inner) inner = w_asd;
+            if (w_fun > inner) inner = w_fun;
+            if (w_spc > inner) inner = w_spc;
 
-            auto ch_key = [&](char c) {
-                char lbl[2] = {c, '\0'};
-                if (ImGui::Button(lbl, key)) vkb_append_char(c);
-                ImGui::SameLine();
-            };
-            auto sym_key = [&](const char *lbl) {
-                if (ImGui::Button(lbl, key)) vkb_append_char(lbl[0]);
-                ImGui::SameLine();
-            };
-            auto letter_key = [&](char c) {
-                const char out = g_vkb_shift ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
-                char lbl[2] = {out, '\0'};
-                if (ImGui::Button(lbl, key)) vkb_append_char(out);
-                ImGui::SameLine();
-            };
+            const float kb_w = inner + 2.0f * pd;
+            const float kb_h = 5.0f * key + 4.0f * gap + 2.0f * pd;
+            const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : kb_w;
+            const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : kb_h;
+            float ox = (sw - kb_w) * 0.5f;
+            if (ox < 0.0f) ox = 0.0f;
+            float oy = sh - kb_h - 10.0f * g_scale;
+            if (oy < 0.0f) oy = 0.0f;
 
-            for (const char *p = "1234567890"; *p; ++p) ch_key(*p);
-            ImGui::NewLine();
-            for (const char *p = "qwertyuiop"; *p; ++p) letter_key(*p);
-            ImGui::NewLine();
-            for (const char *p = "asdfghjkl"; *p; ++p) letter_key(*p);
-            ImGui::NewLine();
-            if (ImGui::Button(g_vkb_shift ? "大写" : "小写", wide)) g_vkb_shift = !g_vkb_shift;
-            ImGui::SameLine();
-            for (const char *p = "zxcvbnm"; *p; ++p) letter_key(*p);
-            if (ImGui::Button("退格", wide)) vkb_backspace();
-            ImGui::SameLine();
-            ImGui::NewLine();
-            if (ImGui::Button("空格", ImVec2(120 * g_ui_scale, 34 * g_ui_scale))) vkb_append_char(' ');
-            ImGui::SameLine();
-            sym_key(",");
-            sym_key(".");
-            sym_key("?");
-            sym_key("!");
-            if (ImGui::Button("完成", ImVec2(64 * g_ui_scale, 34 * g_ui_scale))) g_edit_id = nullptr;
-            ImGui::SameLine();
-            if (ImGui::Button("关闭", ImVec2(64 * g_ui_scale, 34 * g_ui_scale))) g_edit_id = nullptr;
+            // 面板 + 边框
+            draw_rect(ox - 2.0f * g_scale, oy - 2.0f * g_scale, kb_w + 4.0f * g_scale,
+                      kb_h + 4.0f * g_scale, kBorder);
+            draw_rect(ox, oy, kb_w, kb_h, kPanel);
 
-            ImGui::End();
-        }
+            const float lx = ox + pd;
+            bool consumed = false;
+            float y = oy + pd;
+            const float step = key + gap;
 
-        // ------------------------------------------------------------------
-        // 字体与许可（重要）
-        //
-        // 本函数只在“运行时”读取操作系统里已安装的字体文件，把字形烘焙进 ImGui
-        // 的内存字形图集，不复制、不打包、不再分发任何字体文件，因此 LuaLoader
-        // 自身不产生字体再分发的许可义务。
-        //
-        // 若将来要把中文字体“随 Loader 一起打包发布”，只能选用允许再分发的
-        // 开源字体，例如：
-        //   - Noto Sans CJK / Source Han Sans —— SIL OFL 1.1（推荐）
-        //   - 文泉驿微米黑 (WenQuanYi Micro Hei) —— Apache-2.0（另有 GPLv3 字体例外）
-        //   - Droid Sans Fallback —— Apache-2.0
-        // 严禁打包专有字体（微软雅黑 msyh、黑体 simhei、宋体 simsun、苹方 PingFang），
-        // 它们在下表仅作“本机运行时兜底”，不得进入发布包。
-        // ------------------------------------------------------------------
-        void load_cjk_font(float size) {
-            // 可自由再分发（OFL / Apache-2.0）——日后内置字体时从这组选
-            static const char *redistributable[] = {
-                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf",
-                    "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf",
-                    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-                    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
-                    "/system/fonts/NotoSansCJK-Regular.ttc", // Android
-                    "/system/fonts/DroidSansFallback.ttf",   // Android
-                    nullptr,
-            };
-            // 专有字体：仅读取本机已安装的，绝不随包分发
-            static const char *local_only[] = {
-                    "C:/Windows/Fonts/msyh.ttc",          // 微软雅黑
-                    "C:/Windows/Fonts/simhei.ttf",        // 黑体
-                    "C:/Windows/Fonts/simsun.ttc",        // 宋体
-                    "/System/Library/Fonts/PingFang.ttc", // 苹方
-                    nullptr,
-            };
-            ImGuiIO &io = ImGui::GetIO();
-            const ImWchar *ranges = io.Fonts->GetGlyphRangesChineseSimplifiedCommon();
-            // 先试可再分发字体，实在没有再退回本机专有字体
-            for (const char **p = redistributable; *p; ++p) {
-                std::error_code ec;
-                if (!std::filesystem::exists(*p, ec)) continue;
-                if (io.Fonts->AddFontFromFileTTF(*p, size, nullptr, ranges)) {
-                    LOG_INFO("[gui] CJK font loaded (redistributable): {}", *p);
-                    return;
+            // 数字行
+            for (int i = 0; i < 10; ++i) {
+                char label[2] = {kRow1[i], '\0'};
+                draw_key(lx + i * step, y, key, key, label, kRow1[i], consumed);
+            }
+            y += step;
+            // qwerty 行
+            for (int i = 0; i < 10; ++i) {
+                const char out = g_edit.shift ? static_cast<char>(std::toupper(kRow2[i])) : kRow2[i];
+                char label[2] = {out, '\0'};
+                draw_key(lx + i * step, y, key, key, label, out, consumed);
+            }
+            y += step;
+            // asdf 行（水平居中）
+            for (int i = 0; i < 9; ++i) {
+                const char out = g_edit.shift ? static_cast<char>(std::toupper(kRow3[i])) : kRow3[i];
+                char label[2] = {out, '\0'};
+                draw_key(lx + (w_qwe - w_asd) * 0.5f + i * step, y, key, key, label, out, consumed);
+            }
+            y += step;
+            // 功能行：shift + zxcvbnm + del（整行居中）
+            {
+                float x = lx + (inner - w_fun) * 0.5f;
+                {
+                    const bool hv = mouse_in(x, y, wide, key);
+                    if (hv) g_hover_gui = true;
+                    if (hv && g_mouse_released) g_edit.shift = !g_edit.shift;
+                    draw_key_box(x, y, wide, key, g_edit.shift ? "ABC" : "abc", hv);
+                    x += wide + gap;
+                }
+                for (int i = 0; i < 7; ++i) {
+                    const char out = g_edit.shift ? static_cast<char>(std::toupper(kRow4[i])) : kRow4[i];
+                    char label[2] = {out, '\0'};
+                    draw_key(x, y, key, key, label, out, consumed);
+                    x += step;
+                }
+                {
+                    const bool hv = mouse_in(x, y, wide, key);
+                    if (hv) g_hover_gui = true;
+                    if (hv && g_mouse_released && !g_edit.buf.empty()) g_edit.buf.pop_back();
+                    draw_key_box(x, y, wide, key, "del", hv);
                 }
             }
-            for (const char **p = local_only; *p; ++p) {
-                std::error_code ec;
-                if (!std::filesystem::exists(*p, ec)) continue;
-                if (io.Fonts->AddFontFromFileTTF(*p, size, nullptr, ranges)) {
-                    LOG_INFO("[gui] CJK font loaded (local system font, not redistributed): {}", *p);
-                    return;
+            y += step;
+            // 空格 / 完成
+            {
+                float x = lx + (inner - w_spc) * 0.5f;
+                const float space_w = key * 6.0f;
+                {
+                    const bool hv = mouse_in(x, y, space_w, key);
+                    if (hv) g_hover_gui = true;
+                    if (hv && g_mouse_released) vkb_append(' ');
+                    draw_key_box(x, y, space_w, key, "space", hv);
+                    x += space_w + gap;
+                }
+                {
+                    const float done_w = key * 3.0f;
+                    const bool hv = mouse_in(x, y, done_w, key);
+                    if (hv) g_hover_gui = true;
+                    if (hv && g_mouse_released) g_edit.active = false;
+                    draw_key_box(x, y, done_w, key, "done", hv);
                 }
             }
-            LOG_WARN("[gui] no CJK font found, Chinese may not render");
+            (void) consumed;
         }
 
-        /// 根据屏幕尺寸计算 UI 缩放（手机放大；窗口越大字越大）
-        float compute_ui_scale(int w, int h) {
-            if (w <= 0 || h <= 0) return 1.0f;
-            const int mn = w < h ? w : h;
-#if defined(__ANDROID__)
-            const float ref = 540.0f, hi = 3.0f;
-#else
-            const float ref = 720.0f, hi = 2.5f;
-#endif
-            float s = static_cast<float>(mn) / ref;
-            if (s < 1.0f) s = 1.0f;
-            if (s > hi) s = hi;
-            return s;
-        }
+        // ====================================================================
+        // Lua GUI 函数
+        // ====================================================================
 
-        /// 应用 UI 缩放：基础样式按比例缩放 + 字体全局缩放
-        void apply_ui_scale() {
-            ImGuiStyle &st = ImGui::GetStyle();
-            st = g_base_style;
-            if (g_ui_scale != 1.0f) st.ScaleAllSizes(g_ui_scale);
-            ImGui::GetIO().FontGlobalScale = g_ui_scale / g_font_bake_scale;
-        }
-
-        void ensure_context() {
-            if (g_ctx_ready) return;
-            IMGUI_CHECKVERSION();
-            ImGui::CreateContext();
-            ImGuiIO &io = ImGui::GetIO();
-            io.IniFilename = nullptr;
-
-            // 先按当前屏幕算缩放，字体按缩放后的尺寸烘焙（保持清晰）
-            int w = 0, h = 0;
-            screen_size(w, h);
-            g_ui_scale = compute_ui_scale(w, h);
-            g_font_bake_scale = g_ui_scale;
-            load_cjk_font(18.0f * g_font_bake_scale);
-
-            ImGui::StyleColorsDark();
-            g_base_style = ImGui::GetStyle();
-            apply_ui_scale();
-#if defined(__ANDROID__)
-            ImGui_ImplOpenGL3_Init("#version 300 es"); // OpenGL ES 3.0
-#else
-            ImGui_ImplOpenGL3_Init(nullptr);
-#endif
-            g_ctx_ready = true;
-            LOG_INFO("[gui] ImGui context created (ui_scale={:.2f})", g_ui_scale);
-        }
-
-        /// 把平台输入喂给 ImGui
-        void feed_pointer() {
-            ImGuiIO &io = ImGui::GetIO();
-#if defined(__ANDROID__)
-            // 输入已在主线程（Main.Draw 后置）采样，这里只读全局值
-            int w = 0, h = 0;
-            screen_size(w, h);
-            // Unity 的鼠标/触摸坐标原点在左下，ImGui 在左上
-            io.MousePos = ImVec2(g_touch_x, static_cast<float>(h) - g_touch_y);
-            io.MouseDown[0] = g_touch_down;
-            io.MouseDown[1] = false;
-#else
-            if (g_gui_mouse && p_get_mouse) {
-                float mx = -FLT_MAX, my = -FLT_MAX;
-                const uint32_t btn = p_get_mouse(&mx, &my);
-                io.MousePos = ImVec2(mx, my);
-                io.MouseDown[0] = (btn & 1u) != 0; // LMASK
-                io.MouseDown[1] = (btn & 4u) != 0; // RMASK
-            } else {
-                // 鼠标归游戏：让 ImGui 忽略鼠标
-                io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
-                io.MouseDown[0] = false;
-                io.MouseDown[1] = false;
-            }
-#endif
-        }
-
-        void render_once() {
-            ImGui_ImplOpenGL3_NewFrame();
-            ImGui::NewFrame();
-
-            ImGuiIO &io = ImGui::GetIO();
-            int w = 0, h = 0;
-            screen_size(w, h);
-            io.DisplaySize = ImVec2(static_cast<float>(w), static_cast<float>(h));
-
-            // 屏幕尺寸变化时同步更新缩放（字号/控件一起变）
-            const float s = compute_ui_scale(w, h);
-            if (s != g_ui_scale) {
-                g_ui_scale = s;
-                apply_ui_scale();
-            }
-
-            feed_pointer();
-
-#if defined(__ANDROID__)
-            // 叠加到默认帧缓冲；Unity 可能留下 FBO/视口，重建
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0, 0, w, h);
-#endif
-
-            // 每个定义了 mod.on_gui 的 Mod 一个窗口
-            for (auto &kv: lualoader::core::lua_mod_handles) {
-                auto *h = kv.second;
-                if (!h || h->gui_ref == LUA_NOREF) continue; // 没有 on_gui 的 Mod 不开窗
-                ImGui::SetNextWindowSize(ImVec2(360 * g_ui_scale, 260 * g_ui_scale), ImGuiCond_FirstUseEver);
-                const bool open = ImGui::Begin(h->mod_id.c_str());
-                if (open) lualoader::lua_engine::call_on_gui(h);
-                ImGui::End();
-            }
-
-            // 有输入框处于编辑态时，弹出虚拟键盘
-            if (g_edit_id) draw_virtual_keyboard();
-
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-#if defined(__ANDROID__)
-            glBindFramebuffer(GL_FRAMEBUFFER, 0); // 还原，交回游戏
-#endif
-        }
-
-#if defined(__ANDROID__)
-        /// Main.Draw 后置（主线程）：采样 Unity 输入到全局，供渲染线程读取
-        void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
-            sample_input();
-        }
-
-        /// eglSwapBuffers 钩子：在真正交换前把 ImGui 叠加到默认帧缓冲
-        EGLBoolean swap_hook(EGLDisplay dpy, EGLSurface surf) {
-            if (!g_in_render && surf != EGL_NO_SURFACE) {
-                EGLint w = 0, h = 0;
-                eglQuerySurface(dpy, surf, EGL_WIDTH, &w);
-                eglQuerySurface(dpy, surf, EGL_HEIGHT, &h);
-                if (w > 0) g_surface_w = w;
-                if (h > 0) g_surface_h = h;
-                g_egl_display = dpy;
-                g_egl_surface = surf;
-                g_gui_mouse = true; // Android 上触摸即 GUI 输入
-
-                g_in_render = true;
-                ensure_context();
-                render_once();
-                g_in_render = false;
-            }
-            return p_orig_swap ? p_orig_swap(dpy, surf) : EGL_TRUE;
-        }
-#else
-        void draw_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
-            resolve_sdl();
-            poll_toggle();
-            if (g_gui_mouse && g_window && p_set_rel) {
-                // 游戏每帧可能重新开启相对模式；GUI 模式下持续压制
-                p_set_rel(g_window, false);
-            }
-            ensure_context();
-            poll_keyboard(); // 必须在 ImGui::NewFrame 之前喂入键盘事件
-            render_once();
-        }
-#endif
-    } // namespace
-
-    bool installed() { return g_installed; }
-
-#if defined(__ANDROID__)
-    void install() {
-        if (g_installed) return;
-
-        // 复用内核已加载的 Dobby：libtefkernel.so 导出了 DobbyHook；
-        // LuaLoader 自身在内存中加载，故先用 /proc/self/maps 找到已加载路径再 dlopen(NOLOAD)。
-        void *dobby = resolve_loaded_symbol("libtefkernel.so", "DobbyHook");
-        if (!dobby) {
-            LOG_ERROR("[gui] DobbyHook not found; Android GUI disabled");
-            return;
-        }
-        using dobby_hook_fn = int (*)(void *, void *, void **);
-        const auto hook = reinterpret_cast<dobby_hook_fn>(dobby);
-
-        void *swap = resolve_loaded_symbol("libEGL.so", "eglSwapBuffers");
-        if (!swap) {
-            LOG_ERROR("[gui] eglSwapBuffers not found; Android GUI disabled");
-            return;
-        }
-        if (hook(swap, reinterpret_cast<void *>(&swap_hook), reinterpret_cast<void **>(&p_orig_swap)) != 0) {
-            LOG_ERROR("[gui] failed to hook eglSwapBuffers");
-            return;
-        }
-
-        // 触摸输入：定位 UnityEngine.Input.touches（采样在主线程 Main.Draw 后置里做）
-        if (const patch_handle_t input = patchlib_type_get_type("UnityEngine", "Input")) {
-            g_input_touches = patchlib_type_get_method(input, "get_touches");
-            LOG_INFO("[gui] input: Input.touches={}", reinterpret_cast<void *>(g_input_touches));
-        } else {
-            LOG_WARN("[gui] UnityEngine.Input not found; touch disabled");
-        }
-
-        // 在主线程每帧采样输入：hook Terraria.Main.Draw（后置）
-        if (const patch_handle_t main_type = patchlib_type_get_type("Terraria", "Main")) {
-            patch_handle_t draw = patchlib_type_get_method_by_param_count(main_type, "Draw", 1);
-            if (!draw) draw = patchlib_type_get_method(main_type, "Draw");
-            if (draw) {
-                g_draw_hook = patchlib_install_prepost_hook(draw, nullptr, frame_postfix);
-                LOG_INFO("[gui] hooked Main.Draw for input sampling (id={})", static_cast<int>(g_draw_hook));
-            } else {
-                LOG_WARN("[gui] Main.Draw not found; input sampling disabled");
-            }
-        }
-
-        g_installed = true;
-        LOG_INFO("[gui] hooked eglSwapBuffers (Android/GLES), ImGui GUI enabled");
-    }
-
-    void shutdown() {
-        // Dobby 无卸载接口，置标志即可
-        g_installed = false;
-    }
-#else
-    void install() {
-        if (g_installed) return;
-
-        const patch_handle_t main_type = patchlib_type_get_type("Terraria", "Main");
-        if (!main_type) {
-            LOG_WARN("[gui] Terraria.Main not found, GUI disabled");
-            return;
-        }
-        g_f_screen_w = patchlib_type_get_field(main_type, "screenWidth");
-        g_f_screen_h = patchlib_type_get_field(main_type, "screenHeight");
-
-        patch_handle_t draw = patchlib_type_get_method_by_param_count(main_type, "Draw", 1);
-        if (!draw) draw = patchlib_type_get_method(main_type, "Draw");
-        if (!draw) {
-            LOG_WARN("[gui] Main.Draw not found, GUI disabled");
-            return;
-        }
-        g_draw_hook = patchlib_install_prepost_hook(draw, nullptr, draw_postfix);
-        if (g_draw_hook == PATCH_HOOK_INVALID_ID) {
-            LOG_ERROR("[gui] failed to hook Main.Draw");
-            return;
-        }
-        g_installed = true;
-        LOG_INFO("[gui] hooked Main.Draw (id={}), ImGui GUI enabled", static_cast<int>(g_draw_hook));
-    }
-
-    void shutdown() {
-        if (g_draw_hook != PATCH_HOOK_INVALID_ID) {
-            patchlib_uninstall_hook(g_draw_hook);
-            g_draw_hook = PATCH_HOOK_INVALID_ID;
-        }
-        g_installed = false;
-    }
-#endif
-
-    namespace {
         int l_gui_text(lua_State *L) {
-            ImGui::TextUnformatted(luaL_checkstring(L, 1));
+            const char *s = luaL_checkstring(L, 1);
+            if (!g_ctx) return 0;
+            float x, y;
+            const float w = text_width(s);
+            const float h = line_height();
+            place(x, y, w, h);
+            draw_string(x, y, s, kText, 1.0f);
             return 0;
         }
 
         int l_gui_text_wrapped(lua_State *L) {
-            ImGui::TextWrapped("%s", luaL_checkstring(L, 1));
+            const char *s = luaL_checkstring(L, 1);
+            if (!g_ctx) return 0;
+            // 按内容宽度粗略换行
+            const float max_w = g_ctx->cw;
+            float x, y;
+            place(x, y, g_ctx->cw, line_height());
+            float cur_x = x, cur_y = y;
+            float line_w = 0.0f;
+            std::string line;
+            for (const char *p = s; *p;) {
+                const size_t n = utf8_next(p);
+                const std::string ch(p, n);
+                const float cw = text_width(ch.c_str());
+                if (line_w + cw > max_w && !line.empty()) {
+                    draw_string(cur_x, cur_y, line.c_str(), kText, 1.0f);
+                    cur_y += line_height();
+                    cur_x = x;
+                    line_w = 0.0f;
+                    line.clear();
+                }
+                line += ch;
+                line_w += cw;
+                p += n;
+            }
+            if (!line.empty()) draw_string(cur_x, cur_y, line.c_str(), kText, 1.0f);
+            g_ctx->prev_h = (cur_y - y) + line_height();
+            return 0;
+        }
+
+        int l_gui_separator(lua_State *) {
+            if (!g_ctx) return 0;
+            advance_line();
+            float x, y;
+            place(x, y, g_ctx->cw, 2.0f);
+            Color c;
+            make_color(c, 120, 130, 170, 255);
+            draw_rect(x, y, g_ctx->cw, 1.0f * g_scale, c);
+            g_ctx->prev_h = 6.0f * g_scale;
+            return 0;
+        }
+
+        int l_gui_spacing(lua_State *) {
+            if (!g_ctx) return 0;
+            advance_line();
+            g_ctx->prev_h = line_height() * 0.5f;
+            return 0;
+        }
+
+        int l_gui_same_line(lua_State *) {
+            if (g_ctx) g_ctx->same_line = true;
             return 0;
         }
 
         int l_gui_button(lua_State *L) {
-            lua_pushboolean(L, ImGui::Button(luaL_checkstring(L, 1)));
+            const char *label = luaL_checkstring(L, 1);
+            if (!g_ctx) {
+                lua_pushboolean(L, 0);
+                return 1;
+            }
+            float x, y;
+            const float w = text_width(label) + 24.0f * g_scale;
+            const float h = button_height();
+            place(x, y, w, h);
+
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            bool clicked = false;
+            if (hovered && g_mouse_released) {
+                clicked = true;
+            }
+            const float g1 = 1.0f * g_scale;
+            draw_rect(x, y, w, h, kTrackEdge);                                   // 按钮边框
+            draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1,
+                      hovered ? (g_mouse_down ? kBtnActive : kBtnHover) : kBtn);
+            draw_string(x + 12.0f * g_scale, y + (h - line_height()) * 0.5f, label, kWhite, 1.0f);
+            lua_pushboolean(L, clicked);
             return 1;
         }
 
         int l_gui_checkbox(lua_State *L) {
             const char *label = luaL_checkstring(L, 1);
-            bool v = lua_toboolean(L, 2) != 0;
-            ImGui::Checkbox(label, &v);
-            lua_pushboolean(L, v);
+            bool value = lua_toboolean(L, 2) != 0;
+            if (!g_ctx) {
+                lua_pushboolean(L, value);
+                return 1;
+            }
+            const float box = 18.0f * g_scale;
+            const float h = line_height();
+            const float w = box + item_gap() + text_width(label);
+            float x, y;
+            place(x, y, w, h);
+
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            if (hovered && g_mouse_released) value = !value;
+
+            const float by = y + (h - box) * 0.5f;
+            const float g1 = 1.0f * g_scale;
+            draw_rect(x, by, box, box, kTrackEdge);                                  // 外边框
+            draw_rect(x + g1, by + g1, box - 2 * g1, box - 2 * g1, value ? kFill : kTrack);
+            draw_string(x + box + item_gap(), y, label, kText, 1.0f);
+            lua_pushboolean(L, value);
             return 1;
         }
 
         int l_gui_slider(lua_State *L) {
             const char *label = luaL_checkstring(L, 1);
-            float v = static_cast<float>(luaL_checknumber(L, 2));
+            float value = static_cast<float>(luaL_checknumber(L, 2));
             const float mn = static_cast<float>(luaL_optnumber(L, 3, 0.0));
             const float mx = static_cast<float>(luaL_optnumber(L, 4, 1.0));
-            ImGui::SliderFloat(label, &v, mn, mx);
-            lua_pushnumber(L, v);
-            return 1;
-        }
+            if (!g_ctx) {
+                lua_pushnumber(L, value);
+                return 1;
+            }
 
-        int l_gui_same_line(lua_State *) {
-            ImGui::SameLine();
-            return 0;
-        }
+            const float h = button_height();
+            const float w = g_ctx->cw;
+            float x, y;
+            place(x, y, w, h);
 
-        int l_gui_separator(lua_State *) {
-            ImGui::Separator();
-            return 0;
-        }
+            char text[128];
+            std::snprintf(text, sizeof(text), "%s: %.2f", label, value);
+            draw_string(x, y + (h - line_height()) * 0.5f, text, kText, 1.0f);
 
-        int l_gui_spacing(lua_State *) {
-            ImGui::Spacing();
-            return 0;
-        }
+            // 轨道在右侧
+            const float track_w = w * 0.45f;
+            const float track_x = x + w - track_w;
+            const float track_h = 10.0f * g_scale;
+            const float track_y = y + (h - track_h) * 0.5f;
 
-        int l_gui_collapsing_header(lua_State *L) {
-            lua_pushboolean(L, ImGui::CollapsingHeader(luaL_checkstring(L, 1)));
+            const std::string id = g_current_mod + "#" + label;
+            const bool hovered = mouse_in(track_x, y, track_w, h);
+            if (hovered || g_slider_active == id) g_hover_gui = true;
+            if (hovered && g_mouse_pressed) g_slider_active = id;
+            if (!g_mouse_down && g_slider_active == id) g_slider_active.clear();
+
+            float ratio = 0.0f;
+            if (g_slider_active == id && g_mouse_down) {
+                ratio = (g_mouse_x - track_x) / track_w;
+                if (ratio < 0.0f) ratio = 0.0f;
+                if (ratio > 1.0f) ratio = 1.0f;
+                value = mn + (mx - mn) * ratio;
+            } else {
+                ratio = (mx != mn) ? (value - mn) / (mx - mn) : 0.0f;
+                if (ratio < 0.0f) ratio = 0.0f;
+                if (ratio > 1.0f) ratio = 1.0f;
+            }
+
+            const float g1 = 1.0f * g_scale;
+            draw_rect(track_x, track_y, track_w, track_h, kTrackEdge);           // 轨道边框
+            draw_rect(track_x + g1, track_y + g1, track_w - 2 * g1, track_h - 2 * g1, kTrack);
+            draw_rect(track_x + g1, track_y + g1, (track_w - 2 * g1) * ratio, track_h - 2 * g1, kFill);
+            // 旋钮
+            const float knob_w = 8.0f * g_scale;
+            const float kx = track_x + g1 + (track_w - 2 * g1) * ratio - knob_w * 0.5f;
+            draw_rect(kx, track_y - 2.0f * g_scale, knob_w, track_h + 4.0f * g_scale, kWhite);
+            lua_pushnumber(L, value);
             return 1;
         }
 
         int l_gui_progress_bar(lua_State *L) {
-            ImGui::ProgressBar(static_cast<float>(luaL_checknumber(L, 1)));
+            const float value = static_cast<float>(luaL_checknumber(L, 1));
+            if (!g_ctx) return 0;
+            float x, y;
+            const float w = g_ctx->cw;
+            const float h = 18.0f * g_scale;
+            place(x, y, w, h);
+            float ratio = value;
+            if (ratio < 0.0f) ratio = 0.0f;
+            if (ratio > 1.0f) ratio = 1.0f;
+            const float g1 = 1.0f * g_scale;
+            draw_rect(x, y, w, h, kTrackEdge);                                   // 外边框
+            draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1, kTrack);
+            draw_rect(x + g1, y + g1, (w - 2 * g1) * ratio, h - 2 * g1, kFill);
+            char ptxt[16];
+            std::snprintf(ptxt, sizeof(ptxt), "%d%%", static_cast<int>(ratio * 100.0f + 0.5f));
+            draw_string(x + (w - text_width(ptxt)) * 0.5f, y + (h - line_height()) * 0.5f, ptxt, kWhite, 1.0f);
             return 0;
         }
 
-        // 自绘输入框 + 虚拟键盘（不使用 ImGui::InputText，避免点虚拟键时失焦）
+        int l_gui_collapsing_header(lua_State *L) {
+            const char *label = luaL_checkstring(L, 1);
+            if (!g_ctx) {
+                lua_pushboolean(L, 0);
+                return 1;
+            }
+            const std::string id = g_current_mod + "#" + label;
+            bool open = g_headers[id];
+            float x, y;
+            const float w = g_ctx->cw;
+            const float h = button_height();
+            place(x, y, w, h);
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            if (hovered && g_mouse_released) open = !open;
+            g_headers[id] = open;
+            const float g1 = 1.0f * g_scale;
+            draw_rect(x, y, w, h, kTrackEdge);
+            draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1, hovered ? kBtnHover : kBtn);
+            const std::string text = (open ? "v " : "> ") + std::string(label);
+            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, text.c_str(), kWhite, 1.0f);
+            lua_pushboolean(L, open);
+            return 1;
+        }
+
         int l_gui_input_text(lua_State *L) {
             const char *label = luaL_checkstring(L, 1);
             const char *value = luaL_optstring(L, 2, "");
-            const ImGuiID id = ImGui::GetID(label);
-            const void *key = reinterpret_cast<const void *>(static_cast<uintptr_t>(id));
-            const bool editing = (g_edit_id == key);
-            const float width = ImGui::GetContentRegionAvail().x;
-            const ImVec2 box(width > 0 ? width : 240.0f, 0);
+            if (!g_ctx) {
+                lua_pushstring(L, value);
+                return 1;
+            }
+            const std::string id = g_current_mod + "#" + label;
+            const bool editing = g_edit.active && g_edit.owner == id;
 
-            if (!editing) {
-                ImGui::PushID(label);
-                if (ImGui::Button(value[0] ? value : "(点击输入)", box)) {
-                    g_edit_id = key;
-                    std::snprintf(g_edit_buf, sizeof(g_edit_buf), "%s", value);
-                }
-                ImGui::PopID();
-            } else {
-                // 可选：同时接受物理键盘（编辑时消费字符队列与功能键）
-                ImGuiIO &io = ImGui::GetIO();
-                for (const ImWchar c: io.InputQueueCharacters) {
-                    if (c >= 32 && c < 127) vkb_append_char(static_cast<char>(c));
-                }
-                io.InputQueueCharacters.resize(0);
-                if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) vkb_backspace();
-                if (ImGui::IsKeyPressed(ImGuiKey_Enter)) g_edit_id = nullptr;
-                if (ImGui::IsKeyPressed(ImGuiKey_Escape)) g_edit_id = nullptr;
-
-                char display[VKB_BUF_SIZE + 2];
-                std::snprintf(display, sizeof(display), "%s|", g_edit_buf);
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.35f, 0.55f, 1.0f));
-                ImGui::Button(display, box);
-                ImGui::PopStyleColor();
+            float x, y;
+            const float w = g_ctx->cw;
+            const float h = button_height();
+            place(x, y, w, h);
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            if (hovered && g_mouse_pressed) {
+                g_edit.active = true;
+                g_edit.owner = id;
+                g_edit.buf = value;
             }
 
-            lua_pushstring(L, editing ? g_edit_buf : value);
+            const std::string shown = editing ? (g_edit.buf + "|") : std::string(value[0] ? value : "(tap to edit)");
+            draw_rect(x, y, w, h, editing ? kBtnActive : (hovered ? kBtnHover : kBtn));
+            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kWhite, 1.0f);
+
+            lua_pushstring(L, editing ? g_edit.buf.c_str() : value);
             return 1;
+        }
+
+        // --------------------------------------------------------------------
+        // 窗口定位 / 显示控制：允许 Mod 指定绘制位置、控制出现与消失
+        // --------------------------------------------------------------------
+        WindowState *current_window() {
+            if (g_current_mod.empty()) return nullptr;
+            return &g_windows[g_current_mod];
+        }
+
+        /// mod.gui.set_pos(x, y)  —— 设置窗口左上角（屏幕像素）
+        int l_gui_set_pos(lua_State *L) {
+            const float x = static_cast<float>(luaL_checknumber(L, 1));
+            const float y = static_cast<float>(luaL_checknumber(L, 2));
+            if (WindowState *ws = current_window()) {
+                ws->x = x;
+                ws->y = y;
+            }
+            return 0;
+        }
+
+        /// mod.gui.get_pos() -> x, y
+        int l_gui_get_pos(lua_State *L) {
+            WindowState *ws = current_window();
+            lua_pushnumber(L, ws ? ws->x : 0.0);
+            lua_pushnumber(L, ws ? ws->y : 0.0);
+            return 2;
+        }
+
+        /// mod.gui.set_width(w) —— 设置窗口宽度（高度由内容自动撑开）
+        int l_gui_set_width(lua_State *L) {
+            const float w = static_cast<float>(luaL_checknumber(L, 1));
+            if (WindowState *ws = current_window()) {
+                if (w > 60.0f) ws->w = w;
+            }
+            return 0;
+        }
+
+        /// mod.gui.set_cursor(x, y) —— 移动当前布局光标（相对窗口内容区左上角），
+        /// 之后绘制的控件从该位置开始（用于自由摆放）
+        int l_gui_set_cursor(lua_State *L) {
+            const float x = static_cast<float>(luaL_checknumber(L, 1));
+            const float y = static_cast<float>(luaL_checknumber(L, 2));
+            if (g_ctx) {
+                g_ctx->cx = x;
+                g_ctx->cy = y;
+                g_ctx->prev_h = 0.0f;
+                g_ctx->same_line = false;
+            }
+            return 0;
+        }
+
+        /// mod.gui.set_visible(v) -> v
+        int l_gui_set_visible(lua_State *L) {
+            const bool v = lua_toboolean(L, 1) != 0;
+            if (WindowState *ws = current_window()) ws->visible = v;
+            lua_pushboolean(L, v);
+            return 1;
+        }
+
+        /// mod.gui.is_visible() -> bool
+        int l_gui_is_visible(lua_State *L) {
+            WindowState *ws = current_window();
+            lua_pushboolean(L, ws && ws->visible);
+            return 1;
+        }
+
+        int l_gui_show(lua_State *) {
+            if (WindowState *ws = current_window()) ws->visible = true;
+            return 0;
+        }
+
+        int l_gui_hide(lua_State *) {
+            if (WindowState *ws = current_window()) ws->visible = false;
+            return 0;
         }
 
         const luaL_Reg gui_funcs[] = {
@@ -902,9 +1166,183 @@ namespace lualoader::gui {
                 {"collapsing_header", l_gui_collapsing_header},
                 {"progress_bar", l_gui_progress_bar},
                 {"input_text", l_gui_input_text},
+                {"set_pos", l_gui_set_pos},
+                {"get_pos", l_gui_get_pos},
+                {"set_width", l_gui_set_width},
+                {"set_cursor", l_gui_set_cursor},
+                {"set_visible", l_gui_set_visible},
+                {"is_visible", l_gui_is_visible},
+                {"show", l_gui_show},
+                {"hide", l_gui_hide},
                 {nullptr, nullptr},
         };
+
+        // ====================================================================
+        // 帧钩子
+        // ====================================================================
+
+        patch_hook_id_t g_draw_hook = PATCH_HOOK_INVALID_ID;
+        patch_hook_id_t g_update_hook = PATCH_HOOK_INVALID_ID;
+        bool g_installed = false;
+        bool g_in_render = false;
+
+        /// 当前指针是否落在任一已打开窗口内（用上一帧缓存的位置）
+        bool pointer_over_windows() {
+            if (g_windows.empty() || !g_gfx.usable) return false;
+            if (!g_gfx.a_mouse_x.valid() || !g_gfx.a_mouse_left.valid()) return false;
+            const float mx = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
+            const float my = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
+            for (const auto &kv: g_windows) {
+                const WindowState &ws = kv.second;
+                if (!ws.visible) continue;
+                if (mx >= ws.x && mx <= ws.x + ws.w && my >= ws.y && my <= ws.y + ws.h) return true;
+            }
+            return false;
+        }
+
+        /// Main.Update 前缀：指针悬停在 GUI 上时屏蔽游戏鼠标，避免误触游戏操作
+        bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+            if (pointer_over_windows()) {
+                write_bool(g_gfx.a_mouse_left, false);
+                write_bool(g_gfx.a_mouse_right, false);
+            }
+            return false; // 不跳过原函数
+        }
+
+        void render() {
+            resolve_gfx();
+            if (!g_gfx.usable) return;
+
+            // 没有任何带 on_gui 的 Mod 时完全不介入渲染
+            bool any_gui = false;
+            for (auto &kv: core::lua_mod_handles) {
+                if (kv.second && kv.second->gui_ref != LUA_NOREF) {
+                    any_gui = true;
+                    break;
+                }
+            }
+            if (!any_gui) return;
+
+            // 启动画面（showSplash）阶段贴图/字体尚未就绪，此时绘制会导致
+            // DrawInvBG / DrawBorderString 解引用空资源而崩溃，必须跳过。
+            if (read_bool(g_gfx.a_show_splash, false)) return;
+
+            update_screen_size();
+            update_input();
+            g_hover_gui = false;
+
+            patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
+            if (!sb || !patchlib_is_valid(sb)) return;
+
+            g_sb = sb;
+            sb_begin();
+
+            for (auto &kv: core::lua_mod_handles) {
+                draw_mod_gui(kv.second);
+                // 拖动释放
+                if (!g_mouse_down) g_drag_id.clear();
+            }
+
+            if (g_edit.active) draw_virtual_keyboard();
+
+            sb_end();
+
+            // PC：物品 tooltip + 鼠标光标是顶层 UI，游戏自身已在 DoDraw 里画过，
+            // 这里把它们再画到最上层，避免被我们的窗口盖住。
+#if !defined(__ANDROID__)
+            if (g_gfx.m_draw_cursor) {
+                // DrawInterface_36_Cursor 首行会 spriteBatch.End()，需先开一个批次
+                sb_begin();
+                patchlib_method_invoke_args(g_gfx.m_draw_cursor, nullptr, nullptr, nullptr);
+                sb_end();
+            }
+            if (g_gfx.m_draw_pending_mouse_text) {
+                const int pc = patchlib_method_get_param_count(g_gfx.m_draw_pending_mouse_text);
+                sb_begin();
+                if (pc <= 0) {
+                    patchlib_method_invoke_args(g_gfx.m_draw_pending_mouse_text, nullptr, nullptr, nullptr);
+                } else {
+                    bool world_mouse = false;
+                    void *margs[1] = {&world_mouse};
+                    patchlib_method_invoke_args(g_gfx.m_draw_pending_mouse_text, nullptr, nullptr, margs);
+                }
+                sb_end();
+            }
+#endif
+
+            g_sb = nullptr;
+
+            // 指针悬停在 GUI 上时，屏蔽游戏的鼠标左键，避免同时触发游戏操作
+            if (g_hover_gui) {
+                write_bool(g_gfx.a_mouse_left, false);
+                write_bool(g_gfx.a_mouse_right, false);
+            }
+        }
+
+        void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
+            if (g_in_render) return;
+            g_in_render = true;
+            render();
+            g_in_render = false;
+        }
+
     } // namespace
+
+    bool installed() { return g_installed; }
+
+    void install() {
+        if (g_installed) return;
+
+        if (env_flag("LUALOADER_GUI_DISABLE")) {
+            LOG_INFO("[gui] native GUI disabled by LUALOADER_GUI_DISABLE");
+            return;
+        }
+
+        const patch_handle_t main_type = patchlib_type_get_type("Terraria", "Main");
+        if (!main_type) {
+            LOG_WARN("[gui] Terraria.Main not found, native GUI disabled");
+            return;
+        }
+
+        patch_handle_t render_target = patchlib_type_get_method_by_param_count(main_type, "Draw", 1);
+        if (!render_target || !patchlib_is_valid(render_target)) render_target = patchlib_type_get_method(main_type, "Draw");
+        if (!render_target || !patchlib_is_valid(render_target)) {
+            LOG_WARN("[gui] render hook target not found, native GUI disabled");
+            return;
+        }
+        g_draw_hook = patchlib_install_prepost_hook(render_target, nullptr, frame_postfix);
+        if (g_draw_hook == PATCH_HOOK_INVALID_ID) {
+            LOG_ERROR("[gui] failed to install render hook");
+            return;
+        }
+
+        // 输入屏蔽：在 Main.Update 之前判断是否悬停 GUI
+        patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
+        if (!update || !patchlib_is_valid(update)) update = patchlib_type_get_method_by_param_count(main_type, "DoUpdate", 1);
+        if (update && patchlib_is_valid(update)) {
+            g_update_hook = patchlib_install_prepost_hook(update, update_prefix, nullptr);
+            LOG_INFO("[gui] hooked Main.Update for input suppression (id={})", static_cast<int>(g_update_hook));
+        } else {
+            LOG_WARN("[gui] Main.Update not found; GUI will not suppress game mouse input");
+        }
+
+        // 预解析绘制接口
+        resolve_gfx();
+        g_installed = true;
+        LOG_INFO("[gui] native GUI enabled (render hook id={})", static_cast<int>(g_draw_hook));
+    }
+
+    void shutdown() {
+        if (g_draw_hook != PATCH_HOOK_INVALID_ID) {
+            patchlib_uninstall_hook(g_draw_hook);
+            g_draw_hook = PATCH_HOOK_INVALID_ID;
+        }
+        if (g_update_hook != PATCH_HOOK_INVALID_ID) {
+            patchlib_uninstall_hook(g_update_hook);
+            g_update_hook = PATCH_HOOK_INVALID_ID;
+        }
+        g_installed = false;
+    }
 
     void register_api(lua_State *L, lua_mod_handle_t *) {
         // 在 mod 表（栈顶）上挂 mod.gui

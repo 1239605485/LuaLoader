@@ -50,6 +50,6 @@ namespace lualoader::core {
     /// 重载 LuaLoader 管理的所有 Mod（供调试工具的 /reload 使用）
     void reload_all_mods();
 
-    /// 依次调用所有 Mod 的 mod.on_gui（供内置 ImGui 每帧渲染）
+    /// 依次调用所有 Mod 的 mod.on_gui（每帧渲染）
     void call_all_on_gui();
 } // namespace lualoader::core

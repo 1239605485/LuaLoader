@@ -13,6 +13,7 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [环境信息](#环境信息)
   - [日志](#日志)
   - [文件](#文件)
+- [`mod.gui`：原生图形界面](#modgui原生图形界面)
 - [`mod.patch`：调用内核](#modpatch调用内核)
   - [取类型与成员](#取类型与成员)
   - [字段读写](#字段读写)
@@ -83,6 +84,7 @@ todo_list_android = { "android_setup" }    -- 仅 Android
 - 清单元素可以是函数名（字符串）或函数本身（`{ setup }`）。
 - 也可以用 `mod.init()` / `mod.cleanup()`：初始化时在任务清单之后调用，卸载时调用 `mod.cleanup()`。
 - 零星差异可直接判断：`if mod.platform == "android" then ... end`。
+- 定义全局函数 `on_gui`（`mod.on_gui`）后，加载器会为这个 Mod 开一个窗口并每帧回调它，见 [`mod.gui`](#modgui原生图形界面)。
 
 ---
 
@@ -127,6 +129,64 @@ mod.file_exists("config.txt")                  -- true / false
 
 > Mod 可使用完整的 Lua 标准库（`io` / `os` / `debug` 等），并可自带 C/C++ 原生模块
 > （`Resources/native/<平台>_<架构>/`，详见 [`native.md`](native.md)）。
+
+---
+
+## `mod.gui`：原生图形界面
+
+定义了 `on_gui` 的 Mod 会得到一个可拖动的窗口，加载器**每帧**调用一次该函数。
+界面直接使用游戏自带的 XNA / Unity SpriteBatch 绘制，因此 PC（XNA/FNA）与 PE（Unity）表现一致，
+且无需额外渲染后端。所有控件都是即时模式：返回值即当前状态，直接写回即可。
+
+```lua
+local speed = 3.0
+local enabled = true
+local name = ""
+
+function mod.on_gui()
+    mod.gui.text("我的 Mod")
+    mod.gui.separator()
+    speed   = mod.gui.slider("速度", speed, 1.0, 10.0)
+    enabled = mod.gui.checkbox("启用", enabled)
+    name    = mod.gui.input_text("名字", name)
+    if mod.gui.button("点我") then
+        mod.info("点击，名字 = " .. name)
+    end
+    mod.gui.same_line()
+    mod.gui.text("速度 = " .. speed)
+end
+```
+
+| 函数 | 返回值 | 说明 |
+|---|---|---|
+| `mod.gui.text(s)` | – | 绘制一行文本 |
+| `mod.gui.text_wrapped(s)` | – | 按窗口宽度自动换行的文本 |
+| `mod.gui.button(label)` | `bool` | 按钮；本帧被点击返回 `true` |
+| `mod.gui.checkbox(label, v)` | `bool` | 复选框，返回切换后的值 |
+| `mod.gui.slider(label, v, min, max)` | `number` | 拖动滑块，返回新值 |
+| `mod.gui.input_text(label, v)` | `string` | 文本输入框；点击后在屏幕底部弹出虚拟键盘 |
+| `mod.gui.same_line()` | – | 下一个控件与上一个同行 |
+| `mod.gui.separator()` | – | 水平分隔线 |
+| `mod.gui.spacing()` | – | 空行 |
+| `mod.gui.collapsing_header(label)` | `bool` | 可折叠标题，返回展开状态 |
+| `mod.gui.progress_bar(v)` | – | 进度条（0.0 ~ 1.0） |
+| `mod.gui.set_pos(x, y)` | – | 设置窗口左上角位置（屏幕像素） |
+| `mod.gui.get_pos()` | `x, y` | 取当前窗口位置 |
+| `mod.gui.set_width(w)` | – | 设置窗口宽度（高度随内容自适应） |
+| `mod.gui.set_cursor(x, y)` | – | 移动布局光标（相对内容区左上角），之后控件从该处开始绘制 |
+| `mod.gui.set_visible(v)` | `bool` | 显示/隐藏窗口，返回设定值 |
+| `mod.gui.is_visible()` | `bool` | 当前是否显示 |
+| `mod.gui.show()` / `mod.gui.hide()` | – | 显示 / 隐藏窗口 |
+
+> 窗口位置与显隐由 Mod 控制。隐藏时**仍会回调 `on_gui`**（方便 Mod 在回调里通过
+> `mod.gui.show()` / `set_visible(true)` 重新显示），但控件不绘制、不响应输入。
+> 例如用一个热键/聊天指令改变自己的标志位，在 `on_gui` 里 `mod.gui.set_visible(flag)`。
+
+> 窗口背景、标题栏、拖动与输入屏蔽都由加载器处理；Mod 只需关心控件本身。
+> 指针悬停在窗口上时，加载器会屏蔽游戏鼠标，避免误触游戏操作。
+>
+> 1.7.0 起 GUI 由 Dear ImGui 改为原生 XNA/Unity 绘制，但 `mod.gui.*` 的函数名、参数与
+> 返回语义保持不变，旧版 GUI Mod 无需修改即可继续使用。
 
 ---
 

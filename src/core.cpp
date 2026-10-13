@@ -477,24 +477,9 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     }
 
 #ifdef LUALOADER_GUI
-    // 内置 ImGui GUI 属于调试工具：仅 config.json 里 debug=true 时启用。
-    if (g_debug) {
-        // ImGui 的 OpenGL 后端需要 OpenGL 上下文。
-        // FNA3D(v26) 默认走 SDL_GPU(Vulkan)；在 SDL 初始化之前把 SDL_GPU 驱动指向不可用的
-        // 值，FNA3D 会回退到自带的 OpenGL 后端。用户若已显式设置则不覆盖（保留逃生舱）。
-#if !defined(_WIN32) && !defined(_WIN64) && !defined(__ANDROID__)
-        if (std::getenv("SDL_GPU_DRIVER") == nullptr) {
-            setenv("SDL_GPU_DRIVER", "opengl", 0);
-            LOG_INFO("[gui] set SDL_GPU_DRIVER=opengl to use FNA3D OpenGL backend");
-        } else {
-            LOG_INFO("[gui] SDL_GPU_DRIVER already set to '{}', keep it", std::getenv("SDL_GPU_DRIVER"));
-        }
-#endif
-        // hook 渲染后端出帧函数（Main.Draw 后置）
-        gui::install();
-    } else {
-        LOG_INFO("[gui] GUI disabled (set debug=true in config.json to enable)");
-    }
+    // 原生 GUI 对 Mod 永久开放：任何定义了 mod.on_gui 的 Mod 都会被绘制。
+    // 绘制走游戏自身的 XNA/Unity SpriteBatch，不再需要独立渲染后端。
+    gui::install();
 #endif
 
     LOG_INFO("LuaLoader initialized successfully");
@@ -505,6 +490,10 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
     LOG_INFO("Cleaning up LuaLoader...");
 
     uninstall_debug_hooks();
+
+#ifdef LUALOADER_GUI
+    gui::shutdown();
+#endif
 
     for (auto &entry: lua_mod_handles) {
         lua_engine::call_cleanup(entry.second);
@@ -532,8 +521,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            15,
-            "1.6.4",
+            16,
+            "1.7.0",
             1,
             0,
             nullptr,

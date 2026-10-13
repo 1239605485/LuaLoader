@@ -9,7 +9,6 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 | 组件 | 版本 | 许可证 | 版权 | 仓库位置 | 用途 |
 | --- | --- | --- | --- | --- | --- |
 | Lua | 5.4.8 | MIT | © 1994-2025 Lua.org, PUC-Rio | `lib/lua-5.4.8/` | 内嵌 Lua 脚本引擎 |
-| dear imgui | 1.91.5 | MIT | © 2014-2024 Omar Cornut | `lib/imgui/` | 调试/设置界面 |
 | spdlog | 1.17.0 | MIT | © 2016-present Gabi Melman and spdlog contributors | `lib/spdlog-1.17.0/` | 日志 |
 | {fmt}（spdlog 内置） | 12.1.0 | MIT | © 2012-present Victor Zverovich and {fmt} contributors | `lib/spdlog-1.17.0/include/spdlog/fmt/bundled/` | spdlog 的格式化依赖 |
 | JSON for Modern C++（nlohmann/json） | 3.12.0 | MIT | © 2013-2025 Niels Lohmann | `includes/json.hpp` | JSON 解析 |
@@ -22,7 +21,6 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 | --- | --- | --- |
 | `LICENSES/AGPL-3.0.txt` | LuaLoader 本体 / TEFKernel(AGPL 部分) | <https://www.gnu.org/licenses/agpl-3.0.txt> |
 | `LICENSES/MIT-lua.txt` | Lua 5.4.8 | `lib/lua-5.4.8/src/lua.h`（随附源文件，版本匹配） |
-| `LICENSES/MIT-imgui.txt` | dear imgui v1.91.5 | <https://raw.githubusercontent.com/ocornut/imgui/v1.91.5/LICENSE.txt> |
 | `LICENSES/MIT-spdlog.txt` | spdlog v1.17.0 | <https://raw.githubusercontent.com/gabime/spdlog/v1.17.0/LICENSE> |
 | `LICENSES/MIT-fmt.txt` | {fmt} 12.1.0 | <https://raw.githubusercontent.com/fmtlib/fmt/12.1.0/LICENSE> |
 | `LICENSES/MIT-json.txt` | nlohmann/json v3.12.0 | <https://raw.githubusercontent.com/nlohmann/json/v3.12.0/LICENSE.MIT> |

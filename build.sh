@@ -17,7 +17,7 @@
 #   -d, --debug            Debug 构建
 #   -c, --clean            配置前清空对应 build 目录
 #   -j, --jobs N           并行数（默认 nproc）
-#       --gui              开启内置 Dear ImGui GUI（-DLUALOADER_GUI=ON）
+#       --gui              （已弃用）原生 GUI 现为内置，无需开关
 #       --implib           把 Windows 导入库复制到 sdk/windows_<arch>/
 #       --package          构建后打包 dist/lualoader.tefpkg 并生成发行 zip
 #       --package-only     跳过编译，仅用现有产物打包
@@ -121,7 +121,6 @@ find_ndk() {
 cmake_configure() {
   local p="$1" dir="$2"; shift 2
   local args=(-S "$ROOT" -B "$dir" -G "Unix Makefiles" "-DCMAKE_BUILD_TYPE=$BT")
-  if [ "$GUI" = 1 ]; then args+=(-DLUALOADER_GUI=ON); else args+=(-DLUALOADER_GUI=OFF); fi
   args+=("$@")
   run cmake "${args[@]}"
 }

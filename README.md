@@ -121,14 +121,14 @@ todo_list = { "setup" }
 
 ## 内置 GUI（`mod.gui` / `mod.on_gui`）
 
-LuaLoader 内置了 **Dear ImGui**，Mod 可以直接用 Lua 画界面，无需额外的原生插件。
+LuaLoader 内置原生 GUI：Mod 直接用 Lua 画界面，无需额外的原生插件。
 
 - 只要定义了 `function mod.on_gui()`，加载器就会**自动为该 Mod 创建一个独立窗口**并每帧回调，
-  Mod 不用自己管 `Begin/End`。
-- 界面只在**调试模式**（`config.json` 里 `debug: true`）下渲染：PC 端按 `Insert` 在
-  “鼠标交给 GUI / 还给游戏”之间切换；Android 端直接用触摸操作。
-- 渲染后端：PC 走 FNA3D 的 OpenGL 后端（会自动设置 `SDL_GPU_DRIVER=opengl`，用户已设置则不覆盖）；
-  Android 走 Unity 的 **OpenGL ES + `eglSwapBuffers` 叠加**。
+  Mod 不用自己管窗口的绘制/拖动/输入。
+- 界面**直接使用游戏自带的 XNA / Unity SpriteBatch 绘制**（PC：XNA/FNA；PE：Unity+XNA 兼容层），
+  因此不需要额外的渲染后端，也不依赖 OpenGL 叠加或 `eglSwapBuffers`。
+- 任何定义了 `on_gui` 的 Mod 都会被绘制，无需调试模式。
+- 指针悬停在窗口上时，加载器会屏蔽游戏鼠标，避免误触游戏操作。
 - 高 DPI 自动缩放：字号与控件随屏幕尺寸一起放大，手机上看不费眼。
 
 ```lua
@@ -148,8 +148,21 @@ end
 可用控件：`text` / `text_wrapped` / `button` / `checkbox` / `slider` / `same_line` /
 `separator` / `spacing` / `collapsing_header` / `progress_bar` / `input_text`。
 
-> `input_text` 不使用 ImGui 的 `InputText`，而是自绘输入框 + 底部虚拟键盘，
-> 点虚拟键不会失焦；桌面端也可直接用物理键盘输入。
+窗口定位与显隐：`set_pos` / `get_pos` / `set_width` / `set_cursor` / `set_visible` /
+`is_visible` / `show` / `hide`。
+
+```lua
+-- 指定绘制位置 + 控制出现/消失
+mod.gui.set_pos(20, 20)
+mod.gui.set_visible(visible)   -- 隐藏时仍会回调 on_gui，可在此重新 show()
+```
+
+> `input_text` 自绘输入框 + 底部虚拟键盘，点虚拟键不会失焦。
+
+> **向后兼容**：1.7.0 起 GUI 由 Dear ImGui 改为原生 XNA/Unity 绘制，但 `mod.gui.*` 的
+> 函数名、参数与返回语义保持不变，旧版 GUI Mod 无需修改即可继续使用。
+
+> 设计说明、平台差异与已知限制见 [`doc/gui.md`](doc/gui.md)。
 
 ## 平台差异
 
@@ -440,7 +453,7 @@ LuaLoader 本体是 **AGPL-3.0-or-later**（见 [`LICENSE`](LICENSE)）。
 随仓库分发的第三方组件、版本与许可证见 **[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)**；
 许可证**原文**在 `LICENSES/`（来源见该说明文件）：
 
-- Lua 5.4.8、dear imgui 1.91.5、spdlog 1.17.0（及其内置的 {fmt}）、nlohmann/json 3.12.0 —— 均为 **MIT**；
+- Lua 5.4.8、spdlog 1.17.0（及其内置的 {fmt}）、nlohmann/json 3.12.0 —— 均为 **MIT**；
 - `includes/tefkernel/` 来自 **TEFKernel**：仓库整体 **AGPL-3.0**，随附头文件按文件头为 **MIT**
   （例外：`tefpackage/tefpkg.h` 标注 AGPL-3.0）；
 - `mod-api/mod_logger.h` 来自 **KernelLoader**（作者同为 eternalfuture-e38299），**MIT**。
