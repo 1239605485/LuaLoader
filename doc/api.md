@@ -177,6 +177,9 @@ end
 | `mod.gui.set_visible(v)` | `bool` | 显示/隐藏窗口，返回设定值 |
 | `mod.gui.is_visible()` | `bool` | 当前是否显示 |
 | `mod.gui.show()` / `mod.gui.hide()` | – | 显示 / 隐藏窗口 |
+| `mod.gui.set_collapsed(v)` | `bool` | 收起/展开窗口（收起后只留标题栏） |
+| `mod.gui.is_collapsed()` | `bool` | 当前是否收起 |
+| `mod.gui.toggle_collapsed()` | – | 切换收起/展开 |
 
 > 窗口位置与显隐由 Mod 控制。隐藏时**仍会回调 `on_gui`**（方便 Mod 在回调里通过
 > `mod.gui.show()` / `set_visible(true)` 重新显示），但控件不绘制、不响应输入。

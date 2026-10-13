@@ -69,6 +69,17 @@ namespace lualoader::gui {
             int x, y, w, h;
         };
 
+        // System.Nullable<Matrix>（用于强制 SpriteBatch.Begin 使用单位矩阵）
+        // .NET 布局：{ bool hasValue; T value; }（value 按 T 对齐）
+        struct Mat4 {
+            float m[16];
+        };
+        struct NullableMat {
+            unsigned char has_value;
+            unsigned char _pad[3];
+            Mat4 value;
+        };
+
         // Microsoft.Xna.Framework.Color 的内存布局因平台而异：
         //   - PE(Unity) 打包为 4 字节 A,B,G,R
         //   - PC(XNA/FNA) 为 R,G,B,A + packedValue（8 字节）
@@ -211,6 +222,7 @@ namespace lualoader::gui {
             patch_handle_t f_sprite_batch{nullptr};
 
             patch_handle_t m_sb_begin{nullptr};
+            patch_handle_t m_sb_begin8{nullptr}; // Begin(SpriteSortMode,BlendState,...,Nullable<Matrix>,bool)
             patch_handle_t m_sb_end{nullptr};
             int sb_begin_args{0};
 
@@ -267,6 +279,7 @@ namespace lualoader::gui {
                     }
                 }
                 g_gfx.m_sb_end = get_method(t_sb, "End", 0);
+                g_gfx.m_sb_begin8 = get_method(t_sb, "Begin", 8);
             }
 
             const patch_handle_t t_utils = patchlib_type_get_type("Terraria", "Utils");
@@ -383,20 +396,35 @@ namespace lualoader::gui {
         }
 
         void sb_begin() {
-            if (!g_gfx.m_sb_begin || !g_sb) return;
+            if (!g_sb) return;
+#if defined(__ANDROID__)
+            // PE：强制使用单位矩阵，避免 GUI 跟随世界相机/视野缩放
+            // （PE 无 0 参 Begin；2 参 Begin 会带上世界变换）
+            if (g_gfx.m_sb_begin8) {
+                static NullableMat ident = [] {
+                    NullableMat n{};
+                    n.has_value = 1;
+                    n.value.m[0] = n.value.m[5] = n.value.m[10] = n.value.m[15] = 1.0f;
+                    return n;
+                }();
+                using FnBegin8 = void (*)(void *self, int sort_mode, void *blend, void *sampler,
+                                          void *depth, void *raster, void *effect, NullableMat *xform,
+                                          bool deferred);
+                auto fn = reinterpret_cast<FnBegin8>(patchlib_method_get_pointer(g_gfx.m_sb_begin8));
+                if (fn) {
+                    bool deferred = true;
+                    fn(g_sb, 0, nullptr, nullptr, nullptr, nullptr, nullptr, &ident, deferred);
+                    return;
+                }
+            }
+#endif
+            if (!g_gfx.m_sb_begin) return;
             if (g_gfx.sb_begin_args == 0) {
                 patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, nullptr);
             } else if (g_gfx.sb_begin_args == 2) {
                 int sort_mode = 0; // SpriteSortMode.Deferred
                 unsigned char deferred = 1;
                 void *args[2] = {&sort_mode, &deferred};
-                patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
-            } else {
-                int sort_mode = 0;
-                void *null_obj = nullptr;
-                unsigned char deferred = 1;
-                void *args[8] = {&sort_mode, &null_obj, &null_obj, &null_obj,
-                                 &null_obj, &null_obj, &null_obj, &deferred};
                 patchlib_method_invoke_args(g_gfx.m_sb_begin, g_sb, nullptr, args);
             }
         }
@@ -598,6 +626,7 @@ namespace lualoader::gui {
             float x{40}, y{40};
             float w{380}, h{160};
             bool visible{true};   ///< 是否显示（Mod 可控制出现/消失）
+            bool collapsed{false}; ///< 是否收起为标题栏
             int order{0};
         };
 
@@ -644,15 +673,32 @@ namespace lualoader::gui {
 
             const float p = pad();
             const float th = title_height();
+            const float body_h = ws.collapsed ? th : ws.h;
 
             // 外边框 + 背景 + 标题栏（用上一帧的尺寸，首帧用默认值）
-            draw_rect(ws.x - 2.0f, ws.y - 2.0f, ws.w + 4.0f, ws.h + 4.0f, kBorder);
-            draw_rect(ws.x, ws.y, ws.w, ws.h, kPanel);
+            draw_rect(ws.x - 2.0f, ws.y - 2.0f, ws.w + 4.0f, body_h + 4.0f, kBorder);
+            draw_rect(ws.x, ws.y, ws.w, body_h, kPanel);
             draw_rect(ws.x, ws.y, ws.w, th, kTitle);
             draw_rect(ws.x, ws.y + th - 1.0f, ws.w, 1.0f, kBorder); // 标题栏分隔线
-            draw_string(ws.x + p, ws.y + (th - line_height()) * 0.5f, h->mod_id.c_str(), kWhite, 1.0f);
 
-            const bool title_hovered = mouse_in(ws.x, ws.y, ws.w, th);
+            // 收缩按钮（标题栏左端）：展开显示 v，收起显示 >
+            const float a = th - 8.0f * g_scale;
+            const float ax = ws.x + 4.0f * g_scale;
+            const float ay = ws.y + (th - a) * 0.5f;
+            const bool arrow_hovered = mouse_in(ax, ay, a, a);
+            if (arrow_hovered) g_hover_gui = true;
+            if (arrow_hovered && g_mouse_released) ws.collapsed = !ws.collapsed;
+            draw_rect(ax, ay, a, a, arrow_hovered ? kBtnHover : kBtn);
+            const char *arrow = ws.collapsed ? ">" : "v";
+            draw_string(ax + (a - text_width(arrow)) * 0.5f, ay + (a - line_height()) * 0.5f, arrow,
+                        kWhite, 1.0f);
+
+            // 标题文本
+            draw_string(ax + a + item_gap(), ws.y + (th - line_height()) * 0.5f, h->mod_id.c_str(),
+                        kWhite, 1.0f);
+
+            // 标题栏拖动（避开收缩按钮）
+            const bool title_hovered = mouse_in(ws.x, ws.y, ws.w, th) && !arrow_hovered;
             if (title_hovered) g_hover_gui = true;
             if (title_hovered && g_mouse_pressed && g_drag_id.empty()) {
                 g_drag_id = h->mod_id;
@@ -662,6 +708,12 @@ namespace lualoader::gui {
             if (!g_drag_id.empty() && g_drag_id == h->mod_id && g_mouse_down) {
                 ws.x = g_mouse_x - g_drag_dx;
                 ws.y = g_mouse_y - g_drag_dy;
+            }
+
+            // 收起：只画标题栏，不回调/不绘制内容
+            if (ws.collapsed) {
+                ws.h = th;
+                return;
             }
 
             // 内容：先记录指令（在 Lua 回调内不能直接调托管绘制），
@@ -1147,6 +1199,27 @@ namespace lualoader::gui {
             return 0;
         }
 
+        /// mod.gui.set_collapsed(v) -> v
+        int l_gui_set_collapsed(lua_State *L) {
+            const bool v = lua_toboolean(L, 1) != 0;
+            if (WindowState *ws = current_window()) ws->collapsed = v;
+            lua_pushboolean(L, v);
+            return 1;
+        }
+
+        /// mod.gui.is_collapsed() -> bool
+        int l_gui_is_collapsed(lua_State *L) {
+            WindowState *ws = current_window();
+            lua_pushboolean(L, ws && ws->collapsed);
+            return 1;
+        }
+
+        /// mod.gui.toggle_collapsed() —— 收起/展开
+        int l_gui_toggle_collapsed(lua_State *) {
+            if (WindowState *ws = current_window()) ws->collapsed = !ws->collapsed;
+            return 0;
+        }
+
         const luaL_Reg gui_funcs[] = {
                 {"text", l_gui_text},
                 {"text_wrapped", l_gui_text_wrapped},
@@ -1167,6 +1240,9 @@ namespace lualoader::gui {
                 {"is_visible", l_gui_is_visible},
                 {"show", l_gui_show},
                 {"hide", l_gui_hide},
+                {"set_collapsed", l_gui_set_collapsed},
+                {"is_collapsed", l_gui_is_collapsed},
+                {"toggle_collapsed", l_gui_toggle_collapsed},
                 {nullptr, nullptr},
         };
 

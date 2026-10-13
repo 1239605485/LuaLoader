@@ -40,6 +40,12 @@
 | `mod.gui.set_visible(v)` → `v` | 显示 / 隐藏窗口 |
 | `mod.gui.is_visible()` → `bool` | 当前是否显示 |
 | `mod.gui.show()` / `mod.gui.hide()` | 显示 / 隐藏 |
+| `mod.gui.set_collapsed(v)` → `v` | 收起 / 展开（收起后只留标题栏） |
+| `mod.gui.is_collapsed()` → `bool` | 当前是否收起 |
+| `mod.gui.toggle_collapsed()` | 切换收起 / 展开 |
+
+> 窗口标题栏左端有一个箭头按钮：`v` 展开、`>` 收起（点击即切换，像 ImGui 的折叠）。
+> 收起后只保留标题栏，不绘制内容也不回调 `on_gui`，可显著减少对视野的遮挡。
 
 示例：
 
