@@ -522,11 +522,7 @@ const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
             17,
-<<<<<<< HEAD
             "1.9.6-ui-test",
-=======
-            "1.7.1",
->>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             1,
             0,
             nullptr,

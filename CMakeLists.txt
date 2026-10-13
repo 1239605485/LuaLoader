@@ -29,10 +29,7 @@ set(LUALOADER_SOURCES
         src/lua_api.cpp
         src/mod_api.cpp
         src/gui.cpp
-<<<<<<< HEAD
         src/gui_images.cpp
-=======
->>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         includes/tefkernel/tef_api_imp.c
 )
 
