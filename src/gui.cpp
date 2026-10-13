@@ -31,8 +31,13 @@
 // ============================================================================
 
 #include "gui.hpp"
+#include "gui_images.hpp"
+#include "gui_icon_gesture.hpp"
+#include "gui_click_state.hpp"
+#include "gui_keyboard_bounds.hpp"
 
 #include <cctype>
+#include <algorithm>
 #include <cfloat>
 #include <cstdint>
 #include <cstdio>
@@ -241,6 +246,10 @@ namespace lualoader::gui {
             patch_handle_t m_cm_get_cursor{nullptr};
             patch_handle_t f_cursor_pos{nullptr};
             patch_handle_t f_cursor_down{nullptr};
+<<<<<<< HEAD
+            patch_handle_t f_cursor_id{nullptr};
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             patch_handle_t f_cursor_ignore_world{nullptr};
             patch_handle_t f_cursor_ignore{nullptr};
 #endif
@@ -317,6 +326,10 @@ namespace lualoader::gui {
             if (t_cursor) {
                 g_gfx.f_cursor_pos = patchlib_type_get_field(t_cursor, "Position");
                 g_gfx.f_cursor_down = patchlib_type_get_field(t_cursor, "Down");
+<<<<<<< HEAD
+                g_gfx.f_cursor_id = patchlib_type_get_field(t_cursor, "Id");
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                 g_gfx.f_cursor_ignore_world = patchlib_type_get_field(t_cursor, "IgnoreForWorld");
                 g_gfx.f_cursor_ignore = patchlib_type_get_field(t_cursor, "Ignore");
             }
@@ -346,15 +359,28 @@ namespace lualoader::gui {
         // std::terminate/abort。放到 Lua 之外执行即可规避。
         // --------------------------------------------------------------------
         struct DrawCmd {
+<<<<<<< HEAD
+            enum Kind { RECT, TEXT, IMAGE } kind;
+=======
             enum Kind { RECT, TEXT } kind;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             float x, y, w, h; // RECT 用 w/h；TEXT 用 scale
             Color col;
             std::string text;
             float scale;
+<<<<<<< HEAD
+            int sx=0,sy=0,sw=0,sh=0,border=0;
+            float edge=0;
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         };
 
         std::vector<DrawCmd> g_cmds;
         bool g_recording = false;
+<<<<<<< HEAD
+        std::vector<std::string> g_image_release_queue;
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
 #if defined(__ANDROID__)
         // Android 兜底：内核 patchlib 的按值结构体 FFI 编组在含静态字段的结构体
@@ -372,6 +398,10 @@ namespace lualoader::gui {
 
         void exec_rect(const float x, const float y, const float w, const float h, const Color &c) {
             if (!g_gfx.m_draw_inv_bg || !g_sb || w <= 0 || h <= 0) return;
+<<<<<<< HEAD
+            if(w<24.0f || h<24.0f){images::solid(g_sb,x,y,w,h,&c);return;}
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             Recti r{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
             Color col = c;
 #if defined(__ANDROID__)
@@ -402,6 +432,28 @@ namespace lualoader::gui {
             patchlib_free(str);
         }
 
+<<<<<<< HEAD
+        void sb_begin();
+        void sb_end();
+
+        /// Window backgrounds are one batch; text is a separate foreground batch.
+        /// PE's Unity compatibility renderer may regroup textures in deferred mode.
+        void flush_cmds() {
+            bool has_text=false;
+            for (const DrawCmd &cmd: g_cmds) {
+                if (cmd.kind == DrawCmd::RECT) {
+                    exec_rect(cmd.x, cmd.y, cmd.w, cmd.h, cmd.col);
+                } else if (cmd.kind == DrawCmd::IMAGE) {
+                    images::draw(g_sb,cmd.text,cmd.x,cmd.y,cmd.w,cmd.h,&cmd.col,
+                                 cmd.sx,cmd.sy,cmd.sw,cmd.sh,cmd.border,cmd.edge);
+                } else has_text=true;
+            }
+            if(has_text){
+                sb_end();
+                sb_begin();
+                for(const DrawCmd &cmd:g_cmds)if(cmd.kind==DrawCmd::TEXT)
+                    exec_string(cmd.x,cmd.y,cmd.text.c_str(),cmd.col,cmd.scale);
+=======
         /// 执行当前记录的所有指令（必须在 Lua 回调之外调用）
         void flush_cmds() {
             for (const DrawCmd &cmd: g_cmds) {
@@ -410,28 +462,56 @@ namespace lualoader::gui {
                 } else {
                     exec_string(cmd.x, cmd.y, cmd.text.c_str(), cmd.col, cmd.scale);
                 }
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             }
             g_cmds.clear();
         }
 
+<<<<<<< HEAD
+        Color themed_color(const Color &c);
+
+        void draw_rect(const float x, const float y, const float w, const float h, const Color &c) {
+            if (g_recording) {
+                g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, themed_color(c), {}, 0.0f});
+                return;
+            }
+            exec_rect(x, y, w, h, themed_color(c));
+=======
         void draw_rect(const float x, const float y, const float w, const float h, const Color &c) {
             if (g_recording) {
                 g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, c, {}, 0.0f});
                 return;
             }
             exec_rect(x, y, w, h, c);
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         }
 
         void draw_string(const float x, const float y, const char *text, const Color &c,
                          const float scale = 1.0f) {
             if (!text || !*text) return;
             if (g_recording) {
+<<<<<<< HEAD
+                g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, themed_color(c), text, scale});
+                return;
+            }
+            exec_string(x, y, text, themed_color(c), scale);
+        }
+
+        void draw_image(const std::string &id,float x,float y,float w,float h,const Color &color,
+                        int sx=0,int sy=0,int sw=0,int sh=0,int border=0,float edge=0) {
+            if(id.empty() || w<=0 || h<=0)return;
+            if(g_recording){DrawCmd cmd{DrawCmd::IMAGE,x,y,w,h,color,id,0};
+                cmd.sx=sx;cmd.sy=sy;cmd.sw=sw;cmd.sh=sh;cmd.border=border;cmd.edge=edge;g_cmds.push_back(cmd);
+            }else images::draw(g_sb,id,x,y,w,h,&color,sx,sy,sw,sh,border,edge);
+        }
+=======
                 g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, c, text, scale});
                 return;
             }
             exec_string(x, y, text, c, scale);
         }
 
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         void sb_begin() {
             if (!g_sb) return;
 #if defined(__ANDROID__)
@@ -486,6 +566,16 @@ namespace lualoader::gui {
         bool g_mouse_released = false;
         bool g_prev_mouse_down = false;
         bool g_hover_gui = false;
+<<<<<<< HEAD
+        std::string g_render_owner,g_input_owner,g_pointer_owner;
+        ClickState g_click_state;
+        int g_next_window_order=0;
+#if defined(__ANDROID__)
+        int g_active_cursor_id=0;
+        bool g_active_cursor_valid=false;
+#endif
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
         void update_screen_size() {
             const int w = read_int(g_gfx.a_screen_w, 0);
@@ -506,6 +596,13 @@ namespace lualoader::gui {
         extern std::string g_drag_id;
         extern std::string g_slider_active;
 
+<<<<<<< HEAD
+#if defined(__ANDROID__)
+        bool cursor_captured(void *cursor);
+        void release_finished_touches();
+#endif
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         void update_input() {
 #if defined(__ANDROID__)
             bool android_touch_handled = false;
@@ -529,13 +626,24 @@ namespace lualoader::gui {
                         auto *down_ptr = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_down, c));
                         if (!pos_ptr || !down_ptr) continue;
 
+<<<<<<< HEAD
+                        auto *id_ptr=g_gfx.f_cursor_id?static_cast<int*>(patchlib_field_get_pointer(g_gfx.f_cursor_id,c)):nullptr;
+                        if(g_active_cursor_valid && (!id_ptr || *id_ptr!=g_active_cursor_id))continue;
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                         const bool is_down = (*down_ptr != 0);
                         const Vec2 ui_pos = fn_adjust(*pos_ptr);
                         const bool in_gui = point_in_gui(ui_pos.x, ui_pos.y);
 
                         if (is_down) {
+<<<<<<< HEAD
+                            if (in_gui || cursor_captured(c) || (!g_drag_id.empty() && g_prev_mouse_down) || (!g_slider_active.empty() && g_prev_mouse_down)) {
+                                active_cursor = c;
+                                if(id_ptr){g_active_cursor_id=*id_ptr;g_active_cursor_valid=true;}
+=======
                             if (in_gui || (!g_drag_id.empty() && g_prev_mouse_down) || (!g_slider_active.empty() && g_prev_mouse_down)) {
                                 active_cursor = c;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                                 active_ui_pos = ui_pos;
                                 touch_down = true;
 
@@ -549,7 +657,11 @@ namespace lualoader::gui {
                                 }
                                 break;
                             }
+<<<<<<< HEAD
+                        } else if (g_prev_mouse_down && (in_gui || cursor_captured(c) || !g_drag_id.empty() || !g_slider_active.empty())) {
+=======
                         } else if (g_prev_mouse_down && (in_gui || !g_drag_id.empty() || !g_slider_active.empty())) {
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                             active_cursor = c;
                             active_ui_pos = ui_pos;
                             touch_down = false;
@@ -565,7 +677,11 @@ namespace lualoader::gui {
                         }
                         g_mouse_down = touch_down;
                         g_mouse_pressed = g_mouse_down && !g_prev_mouse_down;
+<<<<<<< HEAD
+                        g_mouse_released = active_cursor && !g_mouse_down && g_prev_mouse_down;
+=======
                         g_mouse_released = !g_mouse_down && g_prev_mouse_down;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                         g_prev_mouse_down = g_mouse_down;
 
                         if (!g_mouse_down && !g_mouse_released) {
@@ -602,14 +718,31 @@ namespace lualoader::gui {
         }
 
         bool mouse_in(const float x, const float y, const float w, const float h) {
+<<<<<<< HEAD
+            if (!g_render_owner.empty() && g_render_owner!=g_input_owner)return false;
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             if (g_mouse_x == -FLT_MAX) return false;
             return g_mouse_x >= x && g_mouse_x <= x + w && g_mouse_y >= y && g_mouse_y <= y + h;
+        }
+
+<<<<<<< HEAD
+        bool widget_click(const char *label,float x,float y,bool hover){
+            const std::string owner=g_render_owner.empty()?"keyboard":g_render_owner;
+            const std::string id=owner+"#"+label+"@"+std::to_string(static_cast<int>(x))+","+std::to_string(static_cast<int>(y));
+            return g_click_state.update(id,hover,g_mouse_pressed,g_mouse_released);
         }
 
         // ====================================================================
         // 文本宽度估算（MouseText 字体约 20px）
         // ====================================================================
 
+=======
+        // ====================================================================
+        // 文本宽度估算（MouseText 字体约 20px）
+        // ====================================================================
+
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         /// 前进一个 UTF-8 字符，返回该字符占用字节数。
         size_t utf8_next(const char *s) {
             const unsigned char c = static_cast<unsigned char>(s[0]);
@@ -755,12 +888,37 @@ namespace lualoader::gui {
             float x{40}, y{40};
             float w{380}, h{160};
             bool visible{true};   ///< 是否显示（Mod 可控制出现/消失）
+<<<<<<< HEAD
+            std::unordered_map<std::string, Color> colors;
+            std::string title;
+            std::string skin_panel,skin_icon;
+            int skin_border=16;
+            float skin_edge=0;
+            float icon_size=48;
+            IconGesture icon_gesture;
+            std::string compact_label; // opt-in: square collapsed launcher
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             bool collapsed{false}; ///< 是否收起为标题栏
             int order{0};
         };
 
         std::unordered_map<std::string, WindowState> g_windows;
 
+<<<<<<< HEAD
+        WindowState *g_style_window = nullptr;
+        Color themed_color(const Color &c) {
+            if (!g_style_window) return c;
+            const char *key = &c == &kPanel ? "panel" : &c == &kTitle ? "title" :
+                &c == &kBtn ? "button" : &c == &kBtnHover ? "hover" :
+                &c == &kBtnActive ? "active" : &c == &kBorder ? "border" :
+                &c == &kTrackEdge ? "border" : &c == &kText ? "text" : nullptr;
+            if (!key) return c;
+            auto it = g_style_window->colors.find(key);
+            return it == g_style_window->colors.end() ? c : it->second;
+        }
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         std::string g_drag_id;
         float g_drag_dx = 0.0f, g_drag_dy = 0.0f;
 
@@ -798,8 +956,15 @@ namespace lualoader::gui {
             for (const auto &kv: g_windows) {
                 const WindowState &ws = kv.second;
                 if (!ws.visible) continue;
+<<<<<<< HEAD
+                const bool compact = ws.collapsed && !ws.compact_label.empty();
+                const float hit_w = compact ? (ws.skin_icon.empty()?title_height():ws.icon_size) : ws.w;
+                const float body_h = compact ? hit_w : ws.collapsed ? title_height() : ws.h;
+                if (x >= ws.x && x <= ws.x + hit_w && y >= ws.y && y <= ws.y + body_h) return true;
+=======
                 const float body_h = ws.collapsed ? title_height() : ws.h;
                 if (x >= ws.x && x <= ws.x + ws.w && y >= ws.y && y <= ws.y + body_h) return true;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             }
             return false;
         }
@@ -812,6 +977,11 @@ namespace lualoader::gui {
             if (!h || h->gui_ref == LUA_NOREF) return;
 
             WindowState &ws = g_windows[h->mod_id];
+<<<<<<< HEAD
+            g_style_window = &ws;
+            g_render_owner=h->mod_id;
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             // 隐藏时：仍然回调 on_gui（Mod 可在此把自己设回显示），但不绘制、不响应输入
             if (!ws.visible) {
@@ -826,15 +996,55 @@ namespace lualoader::gui {
                 return;
             }
 
+<<<<<<< HEAD
+            if (ws.collapsed && !ws.compact_label.empty()) {
+                const float size = ws.skin_icon.empty()?title_height():ws.icon_size;
+                const bool hit=mouse_in(ws.x,ws.y,size,size);
+                const bool can_press=g_drag_id.empty() || g_drag_id==h->mod_id;
+                if(hit && g_mouse_pressed && can_press)g_drag_id=h->mod_id;
+                const auto gesture=ws.icon_gesture.update(g_mouse_x,g_mouse_y,
+                    g_mouse_pressed && can_press,g_mouse_down,g_mouse_released,hit,
+                    ws.x,ws.y,6.0f*g_scale);
+                if(gesture.move){
+                    ws.x=std::max(0.0f,std::min(gesture.x,std::max(0.0f,g_screen_w-size)));
+                    ws.y=std::max(0.0f,std::min(gesture.y,std::max(0.0f,g_screen_h-size)));
+                }
+                const bool hovered=mouse_in(ws.x,ws.y,size,size);
+                if(hovered || ws.icon_gesture.active)g_hover_gui=true;
+                bool custom_icon=false;
+                if(!ws.skin_icon.empty()){draw_image(ws.skin_icon,ws.x,ws.y,size,size,kWhite);int iw=0,ih=0;custom_icon=images::status(ws.skin_icon,iw,ih)=="ready";}
+                if(!custom_icon)draw_rect(ws.x, ws.y, size, size, hovered ? kBtnHover : kTitle);
+                if(!custom_icon)draw_string(ws.x + (size - text_width(ws.compact_label.c_str())) * 0.5f,
+                            ws.y + (size - line_height()) * 0.5f,
+                            ws.compact_label.c_str(), kWhite, 1.0f);
+                if (gesture.tap) ws.collapsed = false;
+                return;
+            }
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             const float p = pad();
             const float th = title_height();
             const float body_h = ws.collapsed ? th : ws.h;
 
+<<<<<<< HEAD
+            bool custom_panel=false;
+            if(!ws.skin_panel.empty()) {
+                draw_image(ws.skin_panel,ws.x,ws.y,ws.w,body_h,kWhite,0,0,0,0,ws.skin_border,ws.skin_edge);
+                int iw=0,ih=0;custom_panel=images::status(ws.skin_panel,iw,ih)=="ready";
+            }
+            if(!custom_panel) {
+                draw_rect(ws.x - 2.0f, ws.y - 2.0f, ws.w + 4.0f, body_h + 4.0f, kBorder);
+                draw_rect(ws.x, ws.y, ws.w, body_h, kPanel);
+                draw_rect(ws.x, ws.y, ws.w, th, kTitle);
+                // DrawInvBG has fixed corners: a 1px rectangle produces a thick black bar.
+            }
+=======
             // 外边框 + 背景 + 标题栏（用上一帧的尺寸，首帧用默认值）
             draw_rect(ws.x - 2.0f, ws.y - 2.0f, ws.w + 4.0f, body_h + 4.0f, kBorder);
             draw_rect(ws.x, ws.y, ws.w, body_h, kPanel);
             draw_rect(ws.x, ws.y, ws.w, th, kTitle);
             draw_rect(ws.x, ws.y + th - 1.0f, ws.w, 1.0f, kBorder); // 标题栏分隔线
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             // 收缩按钮（标题栏左端）：展开显示 v，收起显示 >
             const float a = th - 8.0f * g_scale;
@@ -842,15 +1052,25 @@ namespace lualoader::gui {
             const float ay = ws.y + (th - a) * 0.5f;
             const bool arrow_hovered = mouse_in(ax, ay, a, a);
             if (arrow_hovered) g_hover_gui = true;
+<<<<<<< HEAD
+            if (widget_click("window-collapse",ax,ay,arrow_hovered)) ws.collapsed = !ws.collapsed;
+            if(ws.skin_panel.empty())draw_rect(ax, ay, a, a, arrow_hovered ? kBtnHover : kBtn);
+=======
             if (arrow_hovered && g_mouse_released) ws.collapsed = !ws.collapsed;
             draw_rect(ax, ay, a, a, arrow_hovered ? kBtnHover : kBtn);
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             const char *arrow = ws.collapsed ? ">" : "v";
             draw_string(ax + (a - text_width(arrow)) * 0.5f, ay + (a - line_height()) * 0.5f, arrow,
                         kWhite, 1.0f);
 
             // 标题文本
+<<<<<<< HEAD
+            draw_string(ax + a + item_gap(), ws.y + (th - line_height()) * 0.5f, (ws.title.empty() ? h->mod_id.c_str() : ws.title.c_str()),
+                        custom_panel ? themed_color(kText) : kWhite, 1.0f);
+=======
             draw_string(ax + a + item_gap(), ws.y + (th - line_height()) * 0.5f, h->mod_id.c_str(),
                         kWhite, 1.0f);
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             // 标题栏拖动（避开收缩按钮）
             const bool title_hovered = mouse_in(ws.x, ws.y, ws.w, th) && !arrow_hovered;
@@ -885,7 +1105,11 @@ namespace lualoader::gui {
             g_recording = false;
             g_current_mod.clear();
             g_ctx = nullptr;
+<<<<<<< HEAD
+            if(ws.visible && !ws.collapsed)flush_cmds();else g_cmds.clear();
+=======
             flush_cmds();
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             const float content_h = ctx.cy + ctx.prev_h;
             ws.h = th + p + content_h + p;
@@ -918,7 +1142,11 @@ namespace lualoader::gui {
                       const char out, bool &consumed) {
             const bool hovered = mouse_in(x, y, w, h);
             if (hovered) g_hover_gui = true;
+<<<<<<< HEAD
+            if (widget_click(label,x,y,hovered)) {
+=======
             if (hovered && g_mouse_released) {
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                 vkb_append(out);
                 consumed = true;
             }
@@ -988,7 +1216,11 @@ namespace lualoader::gui {
                 {
                     const bool hv = mouse_in(x, y, wide, key);
                     if (hv) g_hover_gui = true;
+<<<<<<< HEAD
+                    if (widget_click("kb-shift",x,y,hv)) g_edit.shift = !g_edit.shift;
+=======
                     if (hv && g_mouse_released) g_edit.shift = !g_edit.shift;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                     draw_key_box(x, y, wide, key, g_edit.shift ? "ABC" : "abc", hv);
                     x += wide + gap;
                 }
@@ -1001,7 +1233,11 @@ namespace lualoader::gui {
                 {
                     const bool hv = mouse_in(x, y, wide, key);
                     if (hv) g_hover_gui = true;
+<<<<<<< HEAD
+                    if (widget_click("kb-delete",x,y,hv) && !g_edit.buf.empty()) g_edit.buf.pop_back();
+=======
                     if (hv && g_mouse_released && !g_edit.buf.empty()) g_edit.buf.pop_back();
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                     draw_key_box(x, y, wide, key, "del", hv);
                 }
             }
@@ -1013,7 +1249,11 @@ namespace lualoader::gui {
                 {
                     const bool hv = mouse_in(x, y, space_w, key);
                     if (hv) g_hover_gui = true;
+<<<<<<< HEAD
+                    if (widget_click("kb-space",x,y,hv)) vkb_append(' ');
+=======
                     if (hv && g_mouse_released) vkb_append(' ');
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                     draw_key_box(x, y, space_w, key, "space", hv);
                     x += space_w + gap;
                 }
@@ -1021,7 +1261,11 @@ namespace lualoader::gui {
                     const float done_w = key * 3.0f;
                     const bool hv = mouse_in(x, y, done_w, key);
                     if (hv) g_hover_gui = true;
+<<<<<<< HEAD
+                    if (widget_click("kb-done",x,y,hv)) g_edit.active = false;
+=======
                     if (hv && g_mouse_released) g_edit.active = false;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                     draw_key_box(x, y, done_w, key, "done", hv);
                 }
             }
@@ -1111,9 +1355,13 @@ namespace lualoader::gui {
             const bool hovered = mouse_in(x, y, w, h);
             if (hovered) g_hover_gui = true;
             bool clicked = false;
+<<<<<<< HEAD
+            clicked=widget_click(label,x,y,hovered);
+=======
             if (hovered && g_mouse_released) {
                 clicked = true;
             }
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             const float g1 = 1.0f * g_scale;
             draw_rect(x, y, w, h, kTrackEdge);                                   // 按钮边框
             draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1,
@@ -1138,7 +1386,11 @@ namespace lualoader::gui {
 
             const bool hovered = mouse_in(x, y, w, h);
             if (hovered) g_hover_gui = true;
+<<<<<<< HEAD
+            if (widget_click(label,x,y,hovered)) value = !value;
+=======
             if (hovered && g_mouse_released) value = !value;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             const float by = y + (h - box) * 0.5f;
             const float g1 = 1.0f * g_scale;
@@ -1225,6 +1477,63 @@ namespace lualoader::gui {
         }
 
         int l_gui_collapsing_header(lua_State *L) {
+<<<<<<< HEAD
+            const char *label = luaL_checkstring(L, 1);
+            if (!g_ctx) {
+                lua_pushboolean(L, 0);
+                return 1;
+            }
+            const std::string id = g_current_mod + "#" + label;
+            bool open = g_headers[id];
+            float x, y;
+            const float w = g_ctx->cw;
+            const float h = button_height();
+            place(x, y, w, h);
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            if (widget_click(label,x,y,hovered)) open = !open;
+            g_headers[id] = open;
+            const float g1 = 1.0f * g_scale;
+            draw_rect(x, y, w, h, kTrackEdge);
+            draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1, hovered ? kBtnHover : kBtn);
+            const std::string text = (open ? "v " : "> ") + std::string(label);
+            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, text.c_str(), kWhite, 1.0f);
+            lua_pushboolean(L, open);
+            return 1;
+        }
+
+        int l_gui_input_text(lua_State *L) {
+            const char *label = luaL_checkstring(L, 1);
+            const char *value = luaL_optstring(L, 2, "");
+            if (!g_ctx) {
+                lua_pushstring(L, value);
+                return 1;
+            }
+            const std::string id = g_current_mod + "#" + label;
+            const bool editing = g_edit.active && g_edit.owner == id;
+
+            float x, y;
+            const float w = g_ctx->cw;
+            const float h = button_height();
+            place(x, y, w, h);
+            const bool hovered = mouse_in(x, y, w, h);
+            if (hovered) g_hover_gui = true;
+            if (hovered && g_mouse_pressed) {
+                if(g_click_state.armed.empty())g_click_state.armed=g_render_owner+"#input-focus";
+                g_edit.active = true;
+                g_edit.owner = id;
+                g_edit.buf = value;
+            }
+
+            const std::string shown = editing ? (g_edit.buf + "|") : std::string(value[0] ? value : "(tap to edit)");
+            draw_rect(x, y, w, h, editing ? kBtnActive : (hovered ? kBtnHover : kBtn));
+            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kWhite, 1.0f);
+
+            lua_pushstring(L, editing ? g_edit.buf.c_str() : value);
+            return 1;
+        }
+
+=======
             const char *label = luaL_checkstring(L, 1);
             if (!g_ctx) {
                 lua_pushboolean(L, 0);
@@ -1279,6 +1588,7 @@ namespace lualoader::gui {
             return 1;
         }
 
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         // --------------------------------------------------------------------
         // 窗口定位 / 显示控制：允许 Mod 指定绘制位置、控制出现与消失
         // --------------------------------------------------------------------
@@ -1375,7 +1685,161 @@ namespace lualoader::gui {
             return 0;
         }
 
+<<<<<<< HEAD
+        Color lua_color(lua_State *L, int index) {
+            luaL_checktype(L, index, LUA_TTABLE);
+            int values[4] = {255, 255, 255, 255};
+            for (int i = 0; i < 4; ++i) {
+                lua_rawgeti(L, index, i + 1);
+                if (!lua_isnil(L, -1)) {
+                    const int v = static_cast<int>(luaL_checkinteger(L, -1));
+                    values[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+                }
+                lua_pop(L, 1);
+            }
+            Color c; make_color(c, values[0], values[1], values[2], values[3]); return c;
+        }
+        int l_gui_set_style(lua_State *L) {
+            luaL_checktype(L, 1, LUA_TTABLE);
+            WindowState *ws = current_window();
+            if (!ws) return 0;
+            const char *keys[] = {"panel", "title", "button", "hover", "active", "border", "text"};
+            for (const char *key : keys) {
+                lua_getfield(L, 1, key);
+                if (!lua_isnil(L, -1)) ws->colors[key] = lua_color(L, lua_gettop(L));
+                lua_pop(L, 1);
+            }
+            return 0;
+        }
+        // Absolute positions relative to the window content area, in screen pixels.
+        int l_gui_rect(lua_State *L) {
+            float x=luaL_checknumber(L,1), y=luaL_checknumber(L,2);
+            float w=luaL_checknumber(L,3), h=luaL_checknumber(L,4);
+            Color c=lua_color(L,5);
+            if (g_ctx && w>0 && h>0) draw_rect(g_ctx->ox+x,g_ctx->oy+y,w,h,c);
+            return 0;
+        }
+        int l_gui_text_at(lua_State *L) {
+            float x=luaL_checknumber(L,1), y=luaL_checknumber(L,2);
+            const char *text=luaL_checkstring(L,3);
+            Color c=lua_color(L,4);
+            float scale=luaL_optnumber(L,5,1.0f);
+            if (g_ctx && scale>0 && scale<=4) draw_string(g_ctx->ox+x,g_ctx->oy+y,text,c,scale);
+            return 0;
+        }
+        int l_gui_button_at(lua_State *L) {
+            float x=luaL_checknumber(L,1), y=luaL_checknumber(L,2);
+            float w=luaL_checknumber(L,3), h=luaL_checknumber(L,4);
+            const char *text=luaL_checkstring(L,5);
+            if (!g_ctx || w<=0 || h<=0) { lua_pushboolean(L,false); return 1; }
+            x+=g_ctx->ox; y+=g_ctx->oy;
+            const bool hover=mouse_in(x,y,w,h);
+            if (hover) g_hover_gui=true;
+            draw_rect(x,y,w,h,hover ? kBtnHover : kBtn);
+            draw_string(x+(w-text_width(text))*0.5f,y+(h-line_height())*0.5f,text,kText);
+            lua_pushboolean(L,widget_click(text,x,y,hover)); return 1;
+        }
+        int l_gui_set_content_height(lua_State *L) {
+            const float height=luaL_checknumber(L,1);
+            if (g_ctx && height>=0) {g_ctx->cy=height;g_ctx->prev_h=0;}
+            return 0;
+        }
+
+        bool image_owned(const char *id) {return std::string(id).rfind(g_current_mod+"#",0)==0;}
+        int l_gui_load_image(lua_State *L) {
+            const char *path=luaL_checkstring(L,1);
+            std::string root;
+            for(auto &kv:core::lua_mod_handles)if(kv.second && kv.second->mod_id==g_current_mod)root=kv.second->private_dir;
+            const auto id=root.empty()?std::string():images::request(g_current_mod,root,path);
+            if(id.empty())lua_pushnil(L);else lua_pushlstring(L,id.data(),id.size());return 1;
+        }
+        int l_gui_release_image(lua_State *L) {
+            const char *id=luaL_checkstring(L,1);if(image_owned(id))g_image_release_queue.push_back(id);return 0;
+        }
+        int l_gui_image_status(lua_State *L) {
+            const char *id=luaL_checkstring(L,1);int w=0,h=0;
+            const auto state=image_owned(id)?images::status(id,w,h):"invalid";
+            lua_pushlstring(L,state.data(),state.size());lua_pushinteger(L,w);lua_pushinteger(L,h);return 3;
+        }
+        int l_gui_image(lua_State *L) {
+            const char *id=luaL_checkstring(L,1);
+            float x=luaL_checknumber(L,2),y=luaL_checknumber(L,3),w=luaL_checknumber(L,4),h=luaL_checknumber(L,5);
+            Color c=lua_isnoneornil(L,6)?kWhite:lua_color(L,6);
+            int src[4]={0,0,0,0};
+            if(!lua_isnoneornil(L,7)){luaL_checktype(L,7,LUA_TTABLE);for(int i=0;i<4;++i){lua_rawgeti(L,7,i+1);src[i]=luaL_checkinteger(L,-1);lua_pop(L,1);}}
+            if(g_ctx && image_owned(id))draw_image(id,g_ctx->ox+x,g_ctx->oy+y,w,h,c,src[0],src[1],src[2],src[3]);return 0;
+        }
+        int l_gui_image_fit(lua_State *L) {
+            const char *id=luaL_checkstring(L,1);
+            float x=luaL_checknumber(L,2),y=luaL_checknumber(L,3),w=luaL_checknumber(L,4),h=luaL_checknumber(L,5);
+            const char *mode=luaL_optstring(L,6,"contain");
+            Color c=lua_isnoneornil(L,7)?kWhite:lua_color(L,7);
+            const int fit=std::strcmp(mode,"cover")==0?-2:-1;
+            if(g_ctx && image_owned(id))draw_image(id,g_ctx->ox+x,g_ctx->oy+y,w,h,c,0,0,0,0,fit);return 0;
+        }
+        int l_gui_nine_slice(lua_State *L) {
+            const char *id=luaL_checkstring(L,1);
+            float x=luaL_checknumber(L,2),y=luaL_checknumber(L,3),w=luaL_checknumber(L,4),h=luaL_checknumber(L,5);
+            int border=luaL_checkinteger(L,6);Color c=lua_isnoneornil(L,7)?kWhite:lua_color(L,7);
+            float edge=luaL_optnumber(L,8,0);
+            if(g_ctx && image_owned(id) && border>0)draw_image(id,g_ctx->ox+x,g_ctx->oy+y,w,h,c,0,0,0,0,border,edge);return 0;
+        }
+        int l_gui_image_button(lua_State *L) {
+            const char *id=luaL_checkstring(L,1);
+            float x=luaL_checknumber(L,2),y=luaL_checknumber(L,3),w=luaL_checknumber(L,4),h=luaL_checknumber(L,5);
+            const char *label=luaL_optstring(L,6,"");
+            int border=luaL_optinteger(L,7,0);
+            if(!g_ctx || !image_owned(id)||w<=0||h<=0){lua_pushboolean(L,false);return 1;}
+            x+=g_ctx->ox;y+=g_ctx->oy;const bool hovered=mouse_in(x,y,w,h);
+            if(hovered)g_hover_gui=true;
+            Color tint;make_color(tint,hovered?255:235,hovered?255:235,hovered?255:235,255);
+            draw_image(id,x,y,w,h,tint,0,0,0,0,border);
+            if(*label){
+                const float estimated=text_width(label);
+                const float available=std::max(1.0f,w-16.0f*g_scale);
+                const float font_scale=estimated>available?available/estimated:1.0f;
+                draw_string(x+(w-estimated*font_scale)*0.5f,
+                            y+(h-line_height()*font_scale)*0.5f,label,kText,font_scale);
+            }
+            lua_pushboolean(L,widget_click(label,x,y,hovered));return 1;
+        }
+        int l_gui_set_skin(lua_State *L) {
+            const char *panel=luaL_checkstring(L,1),*icon=luaL_checkstring(L,3);
+            const int border=luaL_checkinteger(L,2);float size=luaL_optnumber(L,4,48);float edge=luaL_optnumber(L,5,0);
+            if(WindowState *ws=current_window()){
+                if(image_owned(panel)&&image_owned(icon)&&border>0&&size>=24&&size<=128){
+                    ws->skin_panel=panel;ws->skin_icon=icon;ws->skin_border=border;ws->skin_edge=edge;ws->icon_size=size;
+                }
+            }return 0;
+        }
+
+        // Optional title and compact launcher; unchanged defaults for other mods.
+        int l_gui_set_title(lua_State *L) {
+            const char *title = luaL_checkstring(L, 1);
+            const char *icon = luaL_optstring(L, 2, "");
+            if (WindowState *ws = current_window()) {
+                ws->title = title;
+                ws->compact_label = icon;
+            }
+            return 0;
+        }
+
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         const luaL_Reg gui_funcs[] = {
+                {"load_image", l_gui_load_image},
+                {"image_status", l_gui_image_status},
+                {"release_image", l_gui_release_image},
+                {"image", l_gui_image},
+                {"nine_slice", l_gui_nine_slice},
+                {"image_fit", l_gui_image_fit},
+                {"image_button", l_gui_image_button},
+                {"set_skin", l_gui_set_skin},
+                {"set_style", l_gui_set_style},
+                {"rect", l_gui_rect},
+                {"text_at", l_gui_text_at},
+                {"button_at", l_gui_button_at},
+                {"set_content_height", l_gui_set_content_height},
                 {"text", l_gui_text},
                 {"text_wrapped", l_gui_text_wrapped},
                 {"button", l_gui_button},
@@ -1387,6 +1851,10 @@ namespace lualoader::gui {
                 {"collapsing_header", l_gui_collapsing_header},
                 {"progress_bar", l_gui_progress_bar},
                 {"input_text", l_gui_input_text},
+<<<<<<< HEAD
+                {"set_title", l_gui_set_title},
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                 {"set_pos", l_gui_set_pos},
                 {"get_pos", l_gui_get_pos},
                 {"set_width", l_gui_set_width},
@@ -1409,6 +1877,72 @@ namespace lualoader::gui {
         patch_hook_id_t g_update_hook = PATCH_HOOK_INVALID_ID;
         bool g_installed = false;
         bool g_in_render = false;
+<<<<<<< HEAD
+#if defined(__ANDROID__)
+        patch_hook_id_t g_layer_hook = PATCH_HOOK_INVALID_ID;
+        patch_hook_id_t g_cursor_list_hook = PATCH_HOOK_INVALID_ID;
+        std::unordered_map<int, bool> g_captured_touches;
+        bool cursor_captured(void *cursor) {
+            const auto f=g_gfx.f_cursor_id;
+            auto *id=f && cursor ? static_cast<int*>(patchlib_field_get_pointer(f,cursor)) : nullptr;
+            return id && g_captured_touches.count(*id);
+        }
+        void release_finished_touches() {
+            if(!g_gfx.f_cm_instance || !g_gfx.m_cm_get_num_cursors || !g_gfx.m_cm_get_cursor)return;
+            void *instance=read_static_object(g_gfx.f_cm_instance);if(!instance)return;
+            auto count=reinterpret_cast<FnGetNumCursors>(patchlib_method_get_pointer(g_gfx.m_cm_get_num_cursors));
+            auto at=reinterpret_cast<FnGetCursor>(patchlib_method_get_pointer(g_gfx.m_cm_get_cursor));
+            if(!count||!at)return;
+            const auto f=g_gfx.f_cursor_id;
+            for(int i=0,n=count(instance);i<n;++i){void *c=at(instance,i);if(!c)continue;
+                auto *id=f?static_cast<int*>(patchlib_field_get_pointer(f,c)):nullptr;
+                auto *down=static_cast<unsigned char*>(patchlib_field_get_pointer(g_gfx.f_cursor_down,c));
+                if(id && down && !*down)g_captured_touches.erase(*id);
+            }
+        }
+        bool capture_cursor(void *cursor) {
+            if (!cursor || !g_gfx.f_cursor_pos || !g_gfx.f_cursor_down || !g_gfx.m_adjust_real_screen) return false;
+            auto *position=static_cast<Vec2*>(patchlib_field_get_pointer(g_gfx.f_cursor_pos,cursor));
+            auto *down=static_cast<unsigned char*>(patchlib_field_get_pointer(g_gfx.f_cursor_down,cursor));
+            const auto id_field=g_gfx.f_cursor_id;
+            auto *id=id_field ? static_cast<int*>(patchlib_field_get_pointer(id_field,cursor)) : nullptr;
+            if (!position || !down || !id) return false;
+            auto adjust=reinterpret_cast<FnAdjustRealScreenForUI>(patchlib_method_get_pointer(g_gfx.m_adjust_real_screen));
+            if (!adjust) return false;
+            const Vec2 pos=adjust(*position);
+            // Once claimed, keep this finger captured through its release frame.
+            if (*down && point_in_gui(pos.x,pos.y)) g_captured_touches[*id]=true;
+            if (!g_captured_touches.count(*id)) return false;
+            for (auto field : {g_gfx.f_cursor_ignore_world,g_gfx.f_cursor_ignore}) {
+                if (field) {auto *v=static_cast<unsigned char*>(patchlib_field_get_pointer(field,cursor));if(v)*v=1;}
+            }
+            return true;
+        }
+        bool cursor_layer_prefix(patch_handle_t, void **args, const patch_method_signature_t *, void *) {
+            return args && args[0] && capture_cursor(*static_cast<void**>(args[0]));
+        }
+        void cursor_list_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
+            if (!g_gfx.f_cm_instance || !g_gfx.m_cm_get_num_cursors || !g_gfx.m_cm_get_cursor) return;
+            void *instance=read_static_object(g_gfx.f_cm_instance);
+            if (!instance) return;
+            auto count=reinterpret_cast<FnGetNumCursors>(patchlib_method_get_pointer(g_gfx.m_cm_get_num_cursors));
+            auto at=reinterpret_cast<FnGetCursor>(patchlib_method_get_pointer(g_gfx.m_cm_get_cursor));
+            if (!count || !at) return;
+            std::unordered_map<int,bool> live;
+            const auto id_field=g_gfx.f_cursor_id;
+            for(int i=0,n=count(instance);i<n;++i){void *c=at(instance,i);if(!c)continue;
+                auto *id=id_field?static_cast<int*>(patchlib_field_get_pointer(id_field,c)):nullptr;
+                if(id)live[*id]=true;
+                capture_cursor(c);
+            }
+            // Cursor objects persist for the release frame. Prune only disappeared IDs.
+            for(auto it=g_captured_touches.begin();it!=g_captured_touches.end();){
+                if(!live.count(it->first))it=g_captured_touches.erase(it);else ++it;
+            }
+        }
+#endif
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
         /// 当前指针是否落在任一已打开窗口内（用上一帧缓存的位置）
         bool pointer_over_windows() {
@@ -1444,7 +1978,11 @@ namespace lualoader::gui {
                         if (!pos_ptr || !down_ptr || *down_ptr == 0) continue;
 
                         const Vec2 ui_pos = fn_adjust(*pos_ptr);
+<<<<<<< HEAD
+                        if (point_in_gui(ui_pos.x, ui_pos.y) || cursor_captured(c)) {
+=======
                         if (point_in_gui(ui_pos.x, ui_pos.y) || !g_drag_id.empty() || !g_slider_active.empty()) {
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
                             if (g_gfx.f_cursor_ignore_world) {
                                 auto *p = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_ignore_world, c));
                                 if (p) *p = 1;
@@ -1479,7 +2017,16 @@ namespace lualoader::gui {
                     break;
                 }
             }
+<<<<<<< HEAD
+            if (!any_gui) {images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};
+                g_pointer_owner.clear();g_input_owner.clear();g_drag_id.clear();g_slider_active.clear();g_click_state.reset();g_render_owner.clear();g_mouse_down=g_prev_mouse_down=false;
+#if defined(__ANDROID__)
+                g_active_cursor_valid=false;g_captured_touches.clear();
+#endif
+                return;}
+=======
             if (!any_gui) return;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             // 启动画面（showSplash）阶段贴图/字体尚未就绪，此时绘制会导致
             // DrawInvBG / DrawBorderString 解引用空资源而崩溃，必须跳过。
@@ -1502,6 +2049,21 @@ namespace lualoader::gui {
             }
 #endif
 
+<<<<<<< HEAD
+            std::vector<std::string> owners;
+            for(const auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF)owners.push_back(kv.second->mod_id);
+            images::prune(owners);
+            auto owner_alive=[&owners](const std::string &key){for(const auto &id:owners)if(key.rfind(id+"#",0)==0)return true;return false;};
+            if(g_edit.active && !owner_alive(g_edit.owner))g_edit=EditState{};
+            for(auto it=g_headers.begin();it!=g_headers.end();){if(!owner_alive(it->first))it=g_headers.erase(it);else ++it;}
+            for(auto it=g_windows.begin();it!=g_windows.end();){
+                bool live=false;for(const auto &id:owners)if(id==it->first){live=true;break;}
+                if(!live)it=g_windows.erase(it);else ++it;
+            }
+            for(const auto &id:g_image_release_queue)images::release(id);
+            g_image_release_queue.clear();
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
             update_screen_size();
             update_input();
             g_hover_gui = false;
@@ -1512,6 +2074,48 @@ namespace lualoader::gui {
             g_sb = sb;
             sb_begin();
 
+<<<<<<< HEAD
+            std::vector<lua_mod_handle_t*> windows;
+            for(auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF){
+                auto &ws=g_windows[kv.second->mod_id];if(ws.order==0)ws.order=++g_next_window_order;
+                const float access=ws.collapsed&&!ws.skin_icon.empty()?ws.icon_size:title_height();
+                ws.x=std::max(0.0f,std::min(ws.x,std::max(0.0f,g_screen_w-access)));
+                ws.y=std::max(0.0f,std::min(ws.y,std::max(0.0f,g_screen_h-access)));
+                windows.push_back(kv.second);
+            }
+            if(!g_pointer_owner.empty() && g_pointer_owner!="#keyboard"){
+                auto it=g_windows.find(g_pointer_owner);
+                if(it==g_windows.end() || !it->second.visible)g_pointer_owner.clear();
+            }
+            g_input_owner=g_pointer_owner;
+            if(g_input_owner=="#keyboard" && !g_edit.active)g_input_owner.clear();
+            if(g_edit.active && keyboard_contains(g_mouse_x,g_mouse_y,g_scale,g_screen_w,g_screen_h))g_input_owner="#keyboard";
+            if(g_input_owner.empty()){
+                int top=-1;
+                for(auto *h:windows){const auto &ws=g_windows[h->mod_id];if(!ws.visible)continue;
+                    const bool compact=ws.collapsed&&!ws.compact_label.empty();
+                    const float w=compact?(ws.skin_icon.empty()?title_height():ws.icon_size):ws.w;
+                    const float height=compact?w:ws.collapsed?title_height():ws.h;
+                    if(g_mouse_x>=ws.x&&g_mouse_x<=ws.x+w&&g_mouse_y>=ws.y&&g_mouse_y<=ws.y+height&&ws.order>=top){top=ws.order;g_input_owner=h->mod_id;}
+                }
+                if(g_mouse_pressed && !g_input_owner.empty()){
+                    g_pointer_owner=g_input_owner;g_windows[g_input_owner].order=++g_next_window_order;
+                }
+            }
+            std::sort(windows.begin(),windows.end(),[](auto *a,auto *b){return g_windows[a->mod_id].order<g_windows[b->mod_id].order;});
+            for(auto *h:windows){draw_mod_gui(h);g_render_owner.clear();}
+            if(!g_mouse_down){g_drag_id.clear();g_slider_active.clear();g_pointer_owner.clear();}
+
+#if defined(__ANDROID__)
+            if(!g_mouse_down)g_active_cursor_valid=false;
+#endif
+
+            g_style_window=nullptr;
+            if (g_edit.active){
+                g_cmds.clear();g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
+            }
+            g_click_state.finish(g_mouse_down,g_mouse_released);
+=======
             for (auto &kv: core::lua_mod_handles) {
                 draw_mod_gui(kv.second);
                 // 拖动释放
@@ -1519,10 +2123,17 @@ namespace lualoader::gui {
             }
 
             if (g_edit.active) draw_virtual_keyboard();
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             sb_end();
 
             g_sb = nullptr;
+<<<<<<< HEAD
+#if defined(__ANDROID__)
+            release_finished_touches();
+#endif
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
 
             // 指针悬停在 GUI 上时，屏蔽游戏的鼠标左键，避免同时触发游戏操作
             if (g_hover_gui) {
@@ -1533,9 +2144,19 @@ namespace lualoader::gui {
 
         void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
             if (g_in_render) return;
+<<<<<<< HEAD
+            struct RenderGuard{~RenderGuard(){g_in_render=false;g_recording=false;g_ctx=nullptr;g_sb=nullptr;g_style_window=nullptr;g_current_mod.clear();g_render_owner.clear();g_cmds.clear();}} guard;
+            g_in_render = true;
+            try{render();}catch(...){
+                LOG_ERROR("[gui] render exception; resetting frame state");
+                if(g_sb){try{sb_end();}catch(...){}}
+                g_click_state.reset();g_drag_id.clear();g_slider_active.clear();g_pointer_owner.clear();
+            }
+=======
             g_in_render = true;
             render();
             g_in_render = false;
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         }
 
     } // namespace
@@ -1578,6 +2199,21 @@ namespace lualoader::gui {
             LOG_WARN("[gui] Main.Update not found; GUI will not suppress game mouse input");
         }
 
+<<<<<<< HEAD
+        // Block mobile controller input at dispatch, before button callbacks run.
+#if defined(__ANDROID__)
+        const auto layer_type=patchlib_type_get_type("", "CursorInputLayer");
+        const auto layer_update=layer_type ? patchlib_type_get_method_by_param_count(layer_type,"UpdateCursor",1) : nullptr;
+        if(layer_update && patchlib_is_valid(layer_update))
+            g_layer_hook=patchlib_install_prepost_hook(layer_update,cursor_layer_prefix,nullptr);
+        const auto cm_type=patchlib_type_get_type("", "CursorManager");
+        const auto list_update=cm_type ? patchlib_type_get_method_by_param_count(cm_type,"UpdateCursorList",0) : nullptr;
+        if(list_update && patchlib_is_valid(list_update))
+            g_cursor_list_hook=patchlib_install_prepost_hook(list_update,nullptr,cursor_list_postfix);
+        LOG_INFO("[gui] touch capture layer={} cursor-list={}",static_cast<int>(g_layer_hook),static_cast<int>(g_cursor_list_hook));
+#endif
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         // 预解析绘制接口
         resolve_gfx();
         g_installed = true;
@@ -1593,6 +2229,27 @@ namespace lualoader::gui {
             patchlib_uninstall_hook(g_update_hook);
             g_update_hook = PATCH_HOOK_INVALID_ID;
         }
+<<<<<<< HEAD
+#if defined(__ANDROID__)
+        if(g_layer_hook!=PATCH_HOOK_INVALID_ID)patchlib_uninstall_hook(g_layer_hook);
+        if(g_cursor_list_hook!=PATCH_HOOK_INVALID_ID)patchlib_uninstall_hook(g_cursor_list_hook);
+        g_layer_hook=g_cursor_list_hook=PATCH_HOOK_INVALID_ID;
+        g_captured_touches.clear();
+#endif
+        images::clear();
+        g_image_release_queue.clear();
+        g_style_window=nullptr;g_ctx=nullptr;g_sb=nullptr;g_recording=false;g_in_render=false;
+        g_windows.clear();g_headers.clear();g_edit=EditState{};g_cmds.clear();g_next_window_order=0;
+        g_render_owner.clear();g_input_owner.clear();g_pointer_owner.clear();g_current_mod.clear();
+        g_drag_id.clear();g_slider_active.clear();g_click_state.reset();
+        g_mouse_down=g_prev_mouse_down=g_mouse_pressed=g_mouse_released=g_hover_gui=false;
+        g_mouse_x=g_mouse_y=-FLT_MAX;
+#if defined(__ANDROID__)
+        g_active_cursor_valid=false;
+#endif
+        g_gfx=Gfx{};
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         g_installed = false;
     }
 
@@ -1600,6 +2257,8 @@ namespace lualoader::gui {
         // 在 mod 表（栈顶）上挂 mod.gui
         lua_newtable(L);
         luaL_setfuncs(L, gui_funcs, 0);
+        lua_pushinteger(L, 2);
+        lua_setfield(L, -2, "image_api_version");
         lua_setfield(L, -2, "gui");
     }
 

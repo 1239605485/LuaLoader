@@ -2,9 +2,15 @@
   "pkgId": "lzup333.lualoader",
   "name": "LuaLoader",
   "author": "lzup333",
+<<<<<<< HEAD
+  "description": "LuaLoader加载器，内置Lua5.4。\n请只安装信任文件来源的 Mod",
+  "version": "1.8.0",
+  "versionCode": 26,
+=======
   "description": "LuaLoader加载器，内置Lua 5.4。\n请只安装信任来源的 Mod。",
   "version": "1.7.1",
   "versionCode": 17,
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
   "detailedInformationURL": "https://github.com/lzup333/LuaLoader",
   "updateURL": "",
   "dependence": [],

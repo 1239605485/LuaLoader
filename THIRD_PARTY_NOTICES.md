@@ -39,3 +39,11 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 - 组件升级时，请同步更新本文件与 `LICENSES/`，并核对版本号与上游许可原文。
 
 > 本说明不构成法律意见；如需正式合规审查，请咨询专业人士。
+
+## stb_image
+Vendored includes/vendor/stb_image.h from https://github.com/nothings/stb . PNG decoder, dual MIT/public-domain terms reproduced at the end of the header. Only PNG enabled.
+
+stb_image.h SHA-256: 594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3
+
+## xDL
+Android symbol lookup fallback: lib/gui-xdl, copied from user-provided TEFKernel source. MIT license and HexHacking Team copyright are preserved in the source headers.

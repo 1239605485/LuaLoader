@@ -29,6 +29,10 @@ set(LUALOADER_SOURCES
         src/lua_api.cpp
         src/mod_api.cpp
         src/gui.cpp
+<<<<<<< HEAD
+        src/gui_images.cpp
+=======
+>>>>>>> 57fb66f187dc4a5992925ae4b3bf26c2f9a21462
         includes/tefkernel/tef_api_imp.c
 )
 
@@ -118,3 +122,9 @@ endif()
 set_target_properties(LuaLoader PROPERTIES
     OUTPUT_NAME "loader.${SYSTEM_NAME}.${ARCH}"
 )
+
+if(ANDROID)
+    add_subdirectory(lib/gui-xdl)
+    set_target_properties(xdl PROPERTIES C_VISIBILITY_PRESET hidden)
+    target_link_libraries(LuaLoader xdl)
+endif()
