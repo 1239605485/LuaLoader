@@ -233,6 +233,17 @@ namespace lualoader::gui {
             Accessor a_mouse_x, a_mouse_y;
             Accessor a_mouse_left, a_mouse_left_release, a_mouse_right;
             Accessor a_show_splash;
+#if defined(__ANDROID__)
+            patch_handle_t m_setup_rendering_ui{nullptr};
+            patch_handle_t m_adjust_real_screen{nullptr};
+            patch_handle_t f_cm_instance{nullptr};
+            patch_handle_t m_cm_get_num_cursors{nullptr};
+            patch_handle_t m_cm_get_cursor{nullptr};
+            patch_handle_t f_cursor_pos{nullptr};
+            patch_handle_t f_cursor_down{nullptr};
+            patch_handle_t f_cursor_ignore_world{nullptr};
+            patch_handle_t f_cursor_ignore{nullptr};
+#endif
         };
 
         Gfx g_gfx;
@@ -288,6 +299,29 @@ namespace lualoader::gui {
                 g_gfx.m_draw_border_string = get_method(t_utils, "DrawBorderString", 8);
             }
 
+#if defined(__ANDROID__)
+            const patch_handle_t t_runner = patchlib_type_get_type("", "XNAUnityRunner");
+            if (t_runner) {
+                g_gfx.m_setup_rendering_ui = get_method(t_runner, "SetupRenderingUI", 1);
+                g_gfx.m_adjust_real_screen = get_method(t_runner, "AdjustRealScreenForUI", 1);
+            }
+
+            const patch_handle_t t_cm = patchlib_type_get_type("", "CursorManager");
+            if (t_cm) {
+                g_gfx.f_cm_instance = patchlib_type_get_field(t_cm, "Instance");
+                g_gfx.m_cm_get_num_cursors = get_method(t_cm, "GetNumCursors", 0);
+                g_gfx.m_cm_get_cursor = get_method(t_cm, "GetCursor", 1);
+            }
+
+            const patch_handle_t t_cursor = patchlib_type_get_type("", "Cursor");
+            if (t_cursor) {
+                g_gfx.f_cursor_pos = patchlib_type_get_field(t_cursor, "Position");
+                g_gfx.f_cursor_down = patchlib_type_get_field(t_cursor, "Down");
+                g_gfx.f_cursor_ignore_world = patchlib_type_get_field(t_cursor, "IgnoreForWorld");
+                g_gfx.f_cursor_ignore = patchlib_type_get_field(t_cursor, "Ignore");
+            }
+#endif
+
             g_gfx.usable = g_gfx.f_sprite_batch && g_gfx.m_sb_begin && g_gfx.m_sb_end &&
                            g_gfx.m_draw_inv_bg && g_gfx.m_draw_border_string;
 
@@ -331,6 +365,9 @@ namespace lualoader::gui {
         using FnDrawInvBG = void (*)(void *sb, Recti r, Color c);
         using FnDrawString = Vec2 (*)(void *sb, void *text, Vec2 pos, Color color,
                                       float scale, float ax, float ay, int32_t max_chars);
+        using FnAdjustRealScreenForUI = Vec2 (*)(Vec2 pos);
+        using FnGetNumCursors = int (*)(void *self);
+        using FnGetCursor = void * (*)(void *self, int index);
 #endif
 
         void exec_rect(const float x, const float y, const float w, const float h, const Color &c) {
@@ -463,13 +500,105 @@ namespace lualoader::gui {
             g_scale = s;
         }
 
+        bool point_in_gui(float x, float y);
+
+        // 前向声明：这两个状态在后面（窗口状态区）才定义，update_input 会用到
+        extern std::string g_drag_id;
+        extern std::string g_slider_active;
+
         void update_input() {
+#if defined(__ANDROID__)
+            bool android_touch_handled = false;
+            void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
+            if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor &&
+                g_gfx.m_adjust_real_screen && g_gfx.f_cursor_pos && g_gfx.f_cursor_down) {
+                auto fn_num_cursors = reinterpret_cast<FnGetNumCursors>(patchlib_method_get_pointer(g_gfx.m_cm_get_num_cursors));
+                auto fn_get_cursor = reinterpret_cast<FnGetCursor>(patchlib_method_get_pointer(g_gfx.m_cm_get_cursor));
+                auto fn_adjust = reinterpret_cast<FnAdjustRealScreenForUI>(patchlib_method_get_pointer(g_gfx.m_adjust_real_screen));
+
+                if (fn_num_cursors && fn_get_cursor && fn_adjust) {
+                    const int num = fn_num_cursors(cm_instance);
+                    void *active_cursor = nullptr;
+                    Vec2 active_ui_pos{g_mouse_x, g_mouse_y};
+                    bool touch_down = false;
+
+                    for (int i = 0; i < num; ++i) {
+                        void *c = fn_get_cursor(cm_instance, i);
+                        if (!c) continue;
+                        auto *pos_ptr = static_cast<Vec2 *>(patchlib_field_get_pointer(g_gfx.f_cursor_pos, c));
+                        auto *down_ptr = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_down, c));
+                        if (!pos_ptr || !down_ptr) continue;
+
+                        const bool is_down = (*down_ptr != 0);
+                        const Vec2 ui_pos = fn_adjust(*pos_ptr);
+                        const bool in_gui = point_in_gui(ui_pos.x, ui_pos.y);
+
+                        if (is_down) {
+                            if (in_gui || (!g_drag_id.empty() && g_prev_mouse_down) || (!g_slider_active.empty() && g_prev_mouse_down)) {
+                                active_cursor = c;
+                                active_ui_pos = ui_pos;
+                                touch_down = true;
+
+                                if (g_gfx.f_cursor_ignore_world) {
+                                    auto *p = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_ignore_world, c));
+                                    if (p) *p = 1;
+                                }
+                                if (g_gfx.f_cursor_ignore) {
+                                    auto *p = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_ignore, c));
+                                    if (p) *p = 1;
+                                }
+                                break;
+                            }
+                        } else if (g_prev_mouse_down && (in_gui || !g_drag_id.empty() || !g_slider_active.empty())) {
+                            active_cursor = c;
+                            active_ui_pos = ui_pos;
+                            touch_down = false;
+                            break;
+                        }
+                    }
+
+                    if (active_cursor || g_prev_mouse_down) {
+                        android_touch_handled = true;
+                        if (active_cursor) {
+                            g_mouse_x = active_ui_pos.x;
+                            g_mouse_y = active_ui_pos.y;
+                        }
+                        g_mouse_down = touch_down;
+                        g_mouse_pressed = g_mouse_down && !g_prev_mouse_down;
+                        g_mouse_released = !g_mouse_down && g_prev_mouse_down;
+                        g_prev_mouse_down = g_mouse_down;
+
+                        if (!g_mouse_down && !g_mouse_released) {
+                            g_mouse_x = -FLT_MAX;
+                            g_mouse_y = -FLT_MAX;
+                        }
+                    }
+                }
+            }
+
+            if (!android_touch_handled) {
+                const bool raw_down = read_bool(g_gfx.a_mouse_left, false);
+                if (raw_down) {
+                    g_mouse_x = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
+                    g_mouse_y = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
+                }
+                g_mouse_down = raw_down;
+                g_mouse_pressed = g_mouse_down && !g_prev_mouse_down;
+                g_mouse_released = !g_mouse_down && g_prev_mouse_down;
+                g_prev_mouse_down = g_mouse_down;
+                if (!g_mouse_down && !g_mouse_released) {
+                    g_mouse_x = -FLT_MAX;
+                    g_mouse_y = -FLT_MAX;
+                }
+            }
+#else
             g_mouse_x = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
             g_mouse_y = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
             g_mouse_down = read_bool(g_gfx.a_mouse_left, false);
             g_mouse_pressed = g_mouse_down && !g_prev_mouse_down;
             g_mouse_released = !g_mouse_down && g_prev_mouse_down;
             g_prev_mouse_down = g_mouse_down;
+#endif
         }
 
         bool mouse_in(const float x, const float y, const float w, const float h) {
@@ -648,6 +777,32 @@ namespace lualoader::gui {
         EditState g_edit;
 
         void draw_virtual_keyboard();
+
+        bool point_in_gui(const float x, const float y) {
+            if (x == -FLT_MAX || y == -FLT_MAX) return false;
+            if (g_edit.active) {
+                const float key = 40.0f * g_scale;
+                const float gap = 6.0f * g_scale;
+                const float pd = 10.0f * g_scale;
+                const float inner = 10.0f * key + 9.0f * gap;
+                const float kb_w = inner + 2.0f * pd;
+                const float kb_h = 5.0f * key + 4.0f * gap + 2.0f * pd;
+                const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : kb_w;
+                const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : kb_h;
+                float ox = (sw - kb_w) * 0.5f;
+                if (ox < 0.0f) ox = 0.0f;
+                float oy = sh - kb_h - 10.0f * g_scale;
+                if (oy < 0.0f) oy = 0.0f;
+                if (x >= ox && x <= ox + kb_w && y >= oy && y <= oy + kb_h) return true;
+            }
+            for (const auto &kv: g_windows) {
+                const WindowState &ws = kv.second;
+                if (!ws.visible) continue;
+                const float body_h = ws.collapsed ? title_height() : ws.h;
+                if (x >= ws.x && x <= ws.x + ws.w && y >= ws.y && y <= ws.y + body_h) return true;
+            }
+            return false;
+        }
 
         // ====================================================================
         // 绘制单个 Mod 的窗口
@@ -1257,20 +1412,54 @@ namespace lualoader::gui {
 
         /// 当前指针是否落在任一已打开窗口内（用上一帧缓存的位置）
         bool pointer_over_windows() {
-            if (g_windows.empty() || !g_gfx.usable) return false;
-            if (!g_gfx.a_mouse_x.valid() || !g_gfx.a_mouse_left.valid()) return false;
+            if (g_windows.empty() && !g_edit.active) return false;
+#if defined(__ANDROID__)
+            if (!g_mouse_down && !g_prev_mouse_down) return false;
+            return point_in_gui(g_mouse_x, g_mouse_y);
+#else
+            if (!g_gfx.usable || !g_gfx.a_mouse_x.valid() || !g_gfx.a_mouse_left.valid()) return false;
             const float mx = static_cast<float>(read_int(g_gfx.a_mouse_x, 0));
             const float my = static_cast<float>(read_int(g_gfx.a_mouse_y, 0));
-            for (const auto &kv: g_windows) {
-                const WindowState &ws = kv.second;
-                if (!ws.visible) continue;
-                if (mx >= ws.x && mx <= ws.x + ws.w && my >= ws.y && my <= ws.y + ws.h) return true;
-            }
-            return false;
+            return point_in_gui(mx, my);
+#endif
         }
 
         /// Main.Update 前缀：指针悬停在 GUI 上时屏蔽游戏鼠标，避免误触游戏操作
         bool update_prefix(patch_handle_t, void **, const patch_method_signature_t *, void *) {
+#if defined(__ANDROID__)
+            void *cm_instance = g_gfx.f_cm_instance ? read_static_object(g_gfx.f_cm_instance) : nullptr;
+            if (cm_instance && g_gfx.m_cm_get_num_cursors && g_gfx.m_cm_get_cursor &&
+                g_gfx.m_adjust_real_screen && g_gfx.f_cursor_pos && g_gfx.f_cursor_down) {
+                auto fn_num_cursors = reinterpret_cast<FnGetNumCursors>(patchlib_method_get_pointer(g_gfx.m_cm_get_num_cursors));
+                auto fn_get_cursor = reinterpret_cast<FnGetCursor>(patchlib_method_get_pointer(g_gfx.m_cm_get_cursor));
+                auto fn_adjust = reinterpret_cast<FnAdjustRealScreenForUI>(patchlib_method_get_pointer(g_gfx.m_adjust_real_screen));
+
+                if (fn_num_cursors && fn_get_cursor && fn_adjust) {
+                    const int num = fn_num_cursors(cm_instance);
+                    for (int i = 0; i < num; ++i) {
+                        void *c = fn_get_cursor(cm_instance, i);
+                        if (!c) continue;
+                        auto *pos_ptr = static_cast<Vec2 *>(patchlib_field_get_pointer(g_gfx.f_cursor_pos, c));
+                        auto *down_ptr = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_down, c));
+                        if (!pos_ptr || !down_ptr || *down_ptr == 0) continue;
+
+                        const Vec2 ui_pos = fn_adjust(*pos_ptr);
+                        if (point_in_gui(ui_pos.x, ui_pos.y) || !g_drag_id.empty() || !g_slider_active.empty()) {
+                            if (g_gfx.f_cursor_ignore_world) {
+                                auto *p = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_ignore_world, c));
+                                if (p) *p = 1;
+                            }
+                            if (g_gfx.f_cursor_ignore) {
+                                auto *p = static_cast<unsigned char *>(patchlib_field_get_pointer(g_gfx.f_cursor_ignore, c));
+                                if (p) *p = 1;
+                            }
+                            write_bool(g_gfx.a_mouse_left, false);
+                            write_bool(g_gfx.a_mouse_right, false);
+                        }
+                    }
+                }
+            }
+#endif
             if (pointer_over_windows()) {
                 write_bool(g_gfx.a_mouse_left, false);
                 write_bool(g_gfx.a_mouse_right, false);
@@ -1295,6 +1484,23 @@ namespace lualoader::gui {
             // 启动画面（showSplash）阶段贴图/字体尚未就绪，此时绘制会导致
             // DrawInvBG / DrawBorderString 解引用空资源而崩溃，必须跳过。
             if (read_bool(g_gfx.a_show_splash, false)) return;
+
+#if defined(__ANDROID__)
+            struct UIRenderScope {
+                ~UIRenderScope() {
+                    if (g_gfx.m_setup_rendering_ui) {
+                        unsigned char v = 0;
+                        void *args[1] = {&v};
+                        patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+                    }
+                }
+            } ui_scope;
+            if (g_gfx.m_setup_rendering_ui) {
+                unsigned char v = 1;
+                void *args[1] = {&v};
+                patchlib_method_invoke_args(g_gfx.m_setup_rendering_ui, nullptr, nullptr, args);
+            }
+#endif
 
             update_screen_size();
             update_input();
