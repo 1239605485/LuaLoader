@@ -103,11 +103,14 @@ using FnDrawString = Vector2 (*)(void* sb, void* text, Vector2 pos, Color color,
 > 不一致）见 TEFKernel 仓库 `documents/patchlib-ffi-struct-bug.md`。
 > 内核修复后，加载器可撤掉该直调、统一切回 `patchlib_method_invoke_args`。
 
-### 4.3 PC 光标与 tooltip 置顶
+### 4.3 PC 光标 / tooltip 与窗口的层级
 
-PC 的游戏光标与物品 tooltip 属于顶层接口图层。加载器绘制完窗口后，会再次调用
-`Main.DrawInterface_36_Cursor` 与 `Main.DrawPendingMouseText`，把它们重绘到窗口之上，
-避免被窗口遮挡。
+PC 的游戏光标与物品 tooltip 属于顶层接口图层。加载器**不再重绘**它们——重绘会在
+非 100% UI 缩放（`UIScaleMatrix`）时产生第二个光标。当前实现仅绘制窗口本身，
+因此当窗口恰好盖住光标时，光标会显示在窗口之下（已知小瑕疵）。
+
+> 若后续需要“窗口在光标之下”，应改为把窗口绘制插入到接口图层顺序中（光标层之前），
+> 而不是重绘光标。
 
 ## 5. 关闭 GUI（排查用）
 

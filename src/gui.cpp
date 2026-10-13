@@ -216,8 +216,6 @@ namespace lualoader::gui {
 
             patch_handle_t m_draw_inv_bg{nullptr};     // Utils.DrawInvBG(SpriteBatch,Rectangle,Color)
             patch_handle_t m_draw_border_string{nullptr}; // Utils.DrawBorderString(...)
-            patch_handle_t m_draw_pending_mouse_text{nullptr}; // Main.DrawPendingMouseText(...)
-            patch_handle_t m_draw_cursor{nullptr};             // Main.DrawInterface_36_Cursor()
 
             Accessor a_screen_w, a_screen_h;
             Accessor a_mouse_x, a_mouse_y;
@@ -252,11 +250,6 @@ namespace lualoader::gui {
                 g_gfx.a_mouse_left_release = resolve_accessor(g_gfx.t_main, "mouseLeftRelease");
                 g_gfx.a_mouse_right = resolve_accessor(g_gfx.t_main, "mouseRight");
                 g_gfx.a_show_splash = resolve_accessor(g_gfx.t_main, "showSplash");
-                // 顶层 UI（物品 tooltip + 鼠标光标）绘制入口，用于把游戏光标压在我们窗口之上
-                g_gfx.m_draw_pending_mouse_text = get_method(g_gfx.t_main, "DrawPendingMouseText", 0);
-                if (!g_gfx.m_draw_pending_mouse_text)
-                    g_gfx.m_draw_pending_mouse_text = get_method(g_gfx.t_main, "DrawPendingMouseText", 1);
-                g_gfx.m_draw_cursor = get_method(g_gfx.t_main, "DrawInterface_36_Cursor", 0);
             }
 
             const patch_handle_t t_sb =
@@ -1246,29 +1239,6 @@ namespace lualoader::gui {
             if (g_edit.active) draw_virtual_keyboard();
 
             sb_end();
-
-            // PC：物品 tooltip + 鼠标光标是顶层 UI，游戏自身已在 DoDraw 里画过，
-            // 这里把它们再画到最上层，避免被我们的窗口盖住。
-#if !defined(__ANDROID__)
-            if (g_gfx.m_draw_cursor) {
-                // DrawInterface_36_Cursor 首行会 spriteBatch.End()，需先开一个批次
-                sb_begin();
-                patchlib_method_invoke_args(g_gfx.m_draw_cursor, nullptr, nullptr, nullptr);
-                sb_end();
-            }
-            if (g_gfx.m_draw_pending_mouse_text) {
-                const int pc = patchlib_method_get_param_count(g_gfx.m_draw_pending_mouse_text);
-                sb_begin();
-                if (pc <= 0) {
-                    patchlib_method_invoke_args(g_gfx.m_draw_pending_mouse_text, nullptr, nullptr, nullptr);
-                } else {
-                    bool world_mouse = false;
-                    void *margs[1] = {&world_mouse};
-                    patchlib_method_invoke_args(g_gfx.m_draw_pending_mouse_text, nullptr, nullptr, margs);
-                }
-                sb_end();
-            }
-#endif
 
             g_sb = nullptr;
 
