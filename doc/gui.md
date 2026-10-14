@@ -179,54 +179,12 @@ end
 - **输入**：指针位置与按键取自游戏自身（`Main.mouseX/Y`、`Main.mouseLeft` 等），因此各平台
   一致；指针悬停在窗口上时会屏蔽游戏的鼠标，避免误触。
 
-## 8. 平台差异与已知问题
-
-### 8.1 PE（Android）窗口位于游戏 HUD 之下
-
-PE 上窗口会显示在 HUD/菜单**之下**：加载器挂在 `Main.Draw` 后置，而部分游戏 UI 在其之后
-才画。这是已知的层级限制，暂未强行置顶（改到更靠后的点绘制会导致只在切场景时闪现一帧）。
-
-### 8.2 Android 按值结构体 FFI（重要）
-
-Android 上内核 `patchlib_method_invoke_args` 通过 libffi 按参数类型自动编组。当方法含
-**按值传递的结构体参数/返回值**（如 `Vector2`、`Color`、`Rectangle`，它们都带静态成员）时，
-内核生成的 `ffi_type` 布局有误，导致托管方法收到错位参数并抛异常，在 C 层未捕获 →
-`std::terminate` → `SIGABRT`。
-
-加载器因此在 Android 上对绘制方法改走 **原生函数指针 + 手写 ABI** 直调，完全绕开该路径：
-
-```cpp
-using FnDrawInvBG  = void (*)(void* sb, Rectangle r, Color c);
-using FnDrawString = Vector2 (*)(void* sb, void* text, Vector2 pos, Color color,
-                                 float scale, float ax, float ay, int32_t maxChars);
-```
-
-> 详细的内核缺陷分析（静态字段未过滤、值类型字段被当指针、返回类型句柄类型不一致）见
-> TEFKernel 仓库 `documents/patchlib-ffi-struct-bug.md`。内核修复后，加载器可撤掉该直调、
-> 统一切回 `patchlib_method_invoke_args`。
-
-### 8.3 PC 图片绘制：`Nullable<Rectangle>` 编组
-
-PC 走桌面反射路径。桌面反射**无法编组** `SpriteBatch.Draw` 的 `Nullable<Rectangle>`
-（源矩形）参数，回退后源矩形变成 `null`，会把整张纹理缩放进目标格子（皮肤放大/错位）。
-
-加载器因此在 PC 侧把源矩形**按需预裁剪成独立纹理并缓存**，再以无源矩形的
-`Draw(Texture2D, Rectangle, Color)` 绘制，绕开 `Nullable` 编组。Android 分支不受影响。
-
-### 8.4 PC 光标 / tooltip 与窗口的层级
-
-PC 的游戏光标与物品 tooltip 属于顶层接口图层。加载器**不再重绘**它们——重绘会在非 100%
-UI 缩放（`UIScaleMatrix`）时产生第二个光标。当前实现仅绘制窗口本身，因此当窗口恰好盖住
-光标时，光标会显示在窗口之下（已知小瑕疵）。
-
-> 若后续需要“窗口在光标之下”，应把窗口绘制插入到接口图层顺序中（光标层之前），而不是重绘光标。
-
-## 9. 关闭 GUI（排查用）
+## 8. 关闭 GUI（排查用）
 
 设环境变量 `LUALOADER_GUI_DISABLE=1` 可整体禁用 GUI（不影响其它功能）。
 日志中会输出 `[gui] native GUI disabled by LUALOADER_GUI_DISABLE`。
 
-## 10. 向后兼容
+## 9. 向后兼容
 
 `mod.gui.*` 的既有函数名、参数、返回语义与旧 ImGui 版本保持一致，旧 Mod 无需修改。
 第 4、5 节的布局与图片接口为新增可选能力。
