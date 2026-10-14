@@ -48,6 +48,16 @@ cmake --build --preset android-arm64-release
 # arm32 用 android-arm32-release
 ```
 
+## 构建
+
+LuaLoader随仓提供一个build.sh,用于构建或编译，构建需一个libtefkernel
+构建产物包：
+```bash
+export ANDROID_NDK_HOME=~/Android/Sdk/ndk/28.0.13004108/
+export TEFKERNEL_LIB=./libtefkernel.linux.x86_64.so 
+./build.sh -r --package
+```
+
 ## 写一个 Mod
 
 一个 Mod 就是一个目录，结构和 KernelLoader 的 Mod 一样，只是入口从 `.so` 换成了 `main.lua`：
