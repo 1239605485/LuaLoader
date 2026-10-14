@@ -853,19 +853,9 @@ namespace lualoader::gui {
         bool point_in_gui(const float x, const float y) {
             if (x == -FLT_MAX || y == -FLT_MAX) return false;
             if (g_edit.active) {
-                const float key = 40.0f * g_scale;
-                const float gap = 6.0f * g_scale;
-                const float pd = 10.0f * g_scale;
-                const float inner = 10.0f * key + 9.0f * gap;
-                const float kb_w = inner + 2.0f * pd;
-                const float kb_h = 5.0f * key + 4.0f * gap + 2.0f * pd;
-                const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : kb_w;
-                const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : kb_h;
-                float ox = (sw - kb_w) * 0.5f;
-                if (ox < 0.0f) ox = 0.0f;
-                float oy = sh - kb_h - 10.0f * g_scale;
-                if (oy < 0.0f) oy = 0.0f;
-                if (x >= ox && x <= ox + kb_w && y >= oy && y <= oy + kb_h) return true;
+                const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : 0.0f;
+                const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : 0.0f;
+                if (keyboard_contains(x, y, g_scale, sw, sh)) return true;
             }
             for (const auto &kv: g_windows) {
                 const WindowState &ws = kv.second;
@@ -1031,31 +1021,24 @@ namespace lualoader::gui {
         }
 
         void draw_virtual_keyboard() {
-            const float key = 34.0f * g_scale;
-            const float wide = 56.0f * g_scale;
-            const float gap = 4.0f * g_scale;
-            const float pd = 10.0f * g_scale;
+            // 几何与 keyboard_rect() 共用，保证热区与键盘一致
+            const KeyboardRect k = keyboard_rect(g_scale, static_cast<float>(g_screen_w),
+                                                 static_cast<float>(g_screen_h));
+            const float key = k.key;
+            const float wide = k.wide;
+            const float gap = k.gap;
+            const float pd = k.pad;
+            const float kb_w = k.w;
+            const float kb_h = k.h;
+            const float ox = k.x;
+            const float oy = k.y;
+            const float inner = kb_w - 2.0f * pd;
 
-            // 各行内容宽度
-            const float w_num = 10.0f * key + 9.0f * gap;
+            // 各行内容宽度（用于行内居中）
             const float w_qwe = 10.0f * key + 9.0f * gap;
             const float w_asd = 9.0f * key + 8.0f * gap;
             const float w_fun = wide + gap + 7.0f * key + 6.0f * gap + gap + wide;
             const float w_spc = 6.0f * key + gap + 3.0f * key;
-            float inner = w_num;
-            if (w_qwe > inner) inner = w_qwe;
-            if (w_asd > inner) inner = w_asd;
-            if (w_fun > inner) inner = w_fun;
-            if (w_spc > inner) inner = w_spc;
-
-            const float kb_w = inner + 2.0f * pd;
-            const float kb_h = 5.0f * key + 4.0f * gap + 2.0f * pd;
-            const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : kb_w;
-            const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : kb_h;
-            float ox = (sw - kb_w) * 0.5f;
-            if (ox < 0.0f) ox = 0.0f;
-            float oy = sh - kb_h - 10.0f * g_scale;
-            if (oy < 0.0f) oy = 0.0f;
 
             // 面板 + 边框
             draw_rect(ox - 2.0f * g_scale, oy - 2.0f * g_scale, kb_w + 4.0f * g_scale,

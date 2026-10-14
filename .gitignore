@@ -16,3 +16,7 @@ cmake-build-*
 # 打包/发布产物
 dist
 Cache
+
+# local verify build dirs
+build-verify/
+build-verify-apk/
