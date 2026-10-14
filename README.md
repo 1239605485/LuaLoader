@@ -50,7 +50,8 @@ cmake --build --preset android-arm64-release
 
 ## 构建
 
-LuaLoader随仓提供一个build.sh,用于构建或编译，构建需一个libtefkernel
+LuaLoader随仓提供一个build.sh,用于构建或编译,构建需一个libtefkernel
+
 构建产物包：
 ```bash
 export ANDROID_NDK_HOME=~/Android/Sdk/ndk/28.0.13004108/
