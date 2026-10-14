@@ -31,11 +31,14 @@
 // ============================================================================
 
 #include "gui.hpp"
+#include "gui_layer_order.hpp"
 #include "gui_images.hpp"
 #include "gui_icon_gesture.hpp"
 #include "gui_click_state.hpp"
 #include "gui_keyboard_bounds.hpp"
 
+#include <chrono>
+#include <cmath>
 #include <cctype>
 #include <algorithm>
 #include <cfloat>
@@ -360,10 +363,23 @@ namespace lualoader::gui {
             float scale;
             int sx=0,sy=0,sw=0,sh=0,border=0;
             float edge=0;
+            int layer=0;
         };
 
         std::vector<DrawCmd> g_cmds;
         bool g_recording = false;
+        int g_layer=0;
+        bool g_layered=false;
+        struct PerfStats {double callback_ms=0,flush_ms=0;size_t commands=0,layers=0;};
+        std::unordered_map<std::string,PerfStats> g_perf;
+        std::unordered_map<std::string,std::vector<DrawCmd>> g_image_batches;
+        size_t g_batch_commands=0;
+        constexpr size_t kMaxBatchCommands=16384;
+        constexpr size_t kMaxBatchCount=128;
+        std::string g_flush_owner;
+        using PerfClock=std::chrono::steady_clock;
+        double elapsed_ms(PerfClock::time_point start){return std::chrono::duration<double,std::milli>(PerfClock::now()-start).count();}
+
         std::vector<std::string> g_image_release_queue;
 
 #if defined(__ANDROID__)
@@ -419,6 +435,17 @@ namespace lualoader::gui {
         /// Window backgrounds are one batch; text is a separate foreground batch.
         /// PE's Unity compatibility renderer may regroup textures in deferred mode.
         void flush_cmds() {
+            const auto started=PerfClock::now();
+            auto &perf=g_perf[g_flush_owner];perf.commands=g_cmds.size();perf.layers=0;
+            if(g_layered){
+                // End/Begin is a barrier between layers, not between individual glyphs.
+                detail::ordered_layers(g_cmds,[&](int){sb_end();sb_begin();++perf.layers;},[&](const auto &cmd){
+                    if(cmd.kind==DrawCmd::RECT)exec_rect(cmd.x,cmd.y,cmd.w,cmd.h,cmd.col);
+                    else if(cmd.kind==DrawCmd::IMAGE)images::draw(g_sb,cmd.text,cmd.x,cmd.y,cmd.w,cmd.h,&cmd.col,cmd.sx,cmd.sy,cmd.sw,cmd.sh,cmd.border,cmd.edge);
+                    else exec_string(cmd.x,cmd.y,cmd.text.c_str(),cmd.col,cmd.scale);
+                });
+                g_cmds.clear();perf.flush_ms=elapsed_ms(started);return;
+            }
             bool has_text=false;
             for (const DrawCmd &cmd: g_cmds) {
                 if (cmd.kind == DrawCmd::RECT) {
@@ -434,14 +461,14 @@ namespace lualoader::gui {
                 for(const DrawCmd &cmd:g_cmds)if(cmd.kind==DrawCmd::TEXT)
                     exec_string(cmd.x,cmd.y,cmd.text.c_str(),cmd.col,cmd.scale);
             }
-            g_cmds.clear();
+            g_cmds.clear();perf.flush_ms=elapsed_ms(started);
         }
 
         Color themed_color(const Color &c);
 
         void draw_rect(const float x, const float y, const float w, const float h, const Color &c) {
             if (g_recording) {
-                g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, themed_color(c), {}, 0.0f});
+                g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, themed_color(c), {}, 0.0f});g_cmds.back().layer=g_layer;
                 return;
             }
             exec_rect(x, y, w, h, themed_color(c));
@@ -451,7 +478,7 @@ namespace lualoader::gui {
                          const float scale = 1.0f) {
             if (!text || !*text) return;
             if (g_recording) {
-                g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, themed_color(c), text, scale});
+                g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, themed_color(c), text, scale});g_cmds.back().layer=g_layer;
                 return;
             }
             exec_string(x, y, text, themed_color(c), scale);
@@ -461,7 +488,7 @@ namespace lualoader::gui {
                         int sx=0,int sy=0,int sw=0,int sh=0,int border=0,float edge=0) {
             if(id.empty() || w<=0 || h<=0)return;
             if(g_recording){DrawCmd cmd{DrawCmd::IMAGE,x,y,w,h,color,id,0};
-                cmd.sx=sx;cmd.sy=sy;cmd.sw=sw;cmd.sh=sh;cmd.border=border;cmd.edge=edge;g_cmds.push_back(cmd);
+                cmd.sx=sx;cmd.sy=sy;cmd.sw=sw;cmd.sh=sh;cmd.border=border;cmd.edge=edge;cmd.layer=g_layer;g_cmds.push_back(cmd);
             }else images::draw(g_sb,id,x,y,w,h,&color,sx,sy,sw,sh,border,edge);
         }
         void sb_begin() {
@@ -875,6 +902,7 @@ namespace lualoader::gui {
         void draw_mod_gui(lua_mod_handle_t *h) {
             if (!h || h->gui_ref == LUA_NOREF) return;
 
+            g_layer=0;g_layered=false;g_flush_owner=h->mod_id;
             WindowState &ws = g_windows[h->mod_id];
             g_style_window = &ws;
             g_render_owner=h->mod_id;
@@ -976,7 +1004,9 @@ namespace lualoader::gui {
             g_current_mod = h->mod_id;
             g_cmds.clear();
             g_recording = true;
+            const auto callback_started=PerfClock::now();
             lua_engine::call_on_gui(h);
+            g_perf[h->mod_id].callback_ms=elapsed_ms(callback_started);
             g_recording = false;
             g_current_mod.clear();
             g_ctx = nullptr;
@@ -1600,7 +1630,75 @@ namespace lualoader::gui {
             return 0;
         }
 
+
+        int l_gui_set_layer(lua_State *L){
+            const int layer=static_cast<int>(luaL_checkinteger(L,1));
+            if(layer<0||layer>31)return luaL_error(L,"layer must be 0..31");
+            g_layer=layer;g_layered=true;return 0;
+        }
+        int l_gui_screen_size(lua_State *L){
+            lua_pushnumber(L,g_screen_w); lua_pushnumber(L,g_screen_h); lua_pushnumber(L,g_scale); return 3;
+        }
+        // Stored lists are local coordinates, one atlas texture per list.
+        // Parse once on content changes; replay from C++ each frame.
+        int l_gui_store_image_batch(lua_State *L){
+            const char *name=luaL_checkstring(L,1);const char *id=luaL_checkstring(L,2);
+            luaL_checktype(L,3,LUA_TTABLE);
+            if(!*name||std::strlen(name)>128)return luaL_error(L,"invalid batch name");
+            if(!image_owned(id))return luaL_error(L,"image belongs to another mod");
+            const size_t n=lua_rawlen(L,3);if(n>4096)return luaL_error(L,"batch exceeds 4096 images");
+            const std::string key=g_current_mod+"#batch#"+name;
+            const auto existing=g_image_batches.find(key);
+            const size_t old=existing==g_image_batches.end()?0:existing->second.size();
+            if(existing==g_image_batches.end()&&g_image_batches.size()>=kMaxBatchCount)return luaL_error(L,"batch count limit");
+            if(g_batch_commands-old+n>kMaxBatchCommands)return luaL_error(L,"batch command budget");
+            // Validate before allocating a C++ vector: Lua errors use longjmp.
+            for(size_t i=1;i<=n;++i){
+                lua_rawgeti(L,3,i);if(!lua_istable(L,-1))return luaL_error(L,"batch entry must be table");
+                for(int j=1;j<=12;++j){lua_rawgeti(L,-1,j);
+                    const bool optional=j>=9&&lua_isnil(L,-1);
+                    if(!optional&&(!lua_isnumber(L,-1)||!std::isfinite(lua_tonumber(L,-1))))return luaL_error(L,"batch entry must contain finite numbers");
+                    if(!optional){const double v=lua_tonumber(L,-1);
+                        if((j>=5&&j<=8&&(v<0||v>2048||std::floor(v)!=v))||(j>=9&&(v<0||v>255||std::floor(v)!=v))||std::abs(v)>100000)return luaL_error(L,"batch entry out of range");}
+                    lua_pop(L,1);
+                }
+                lua_pop(L,1);
+            }
+            std::vector<DrawCmd> commands;commands.reserve(n);
+            for(size_t i=1;i<=n;++i){
+                lua_rawgeti(L,3,i);float v[12];
+                for(int j=1;j<=12;++j){lua_rawgeti(L,-1,j);v[j-1]=lua_isnil(L,-1)?255:static_cast<float>(lua_tonumber(L,-1));lua_pop(L,1);}
+                lua_pop(L,1);Color color;make_color(color,v[8],v[9],v[10],v[11]);
+                DrawCmd cmd{DrawCmd::IMAGE,v[0],v[1],v[2],v[3],color,id,0};cmd.sx=v[4];cmd.sy=v[5];cmd.sw=v[6];cmd.sh=v[7];commands.push_back(std::move(cmd));
+            }
+            g_batch_commands=g_batch_commands-old+n;g_image_batches[key]=std::move(commands);return 0;
+        }
+        int l_gui_draw_image_batch(lua_State *L){
+            const char *name=luaL_checkstring(L,1);const float x=luaL_optnumber(L,2,0),y=luaL_optnumber(L,3,0),scale=luaL_optnumber(L,4,1);
+            if(!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(scale)||scale<=0||scale>16)return luaL_error(L,"invalid batch transform");
+            auto it=g_image_batches.find(g_current_mod+"#batch#"+name);
+            if(it==g_image_batches.end()){lua_pushboolean(L,false);return 1;}
+            if(g_ctx)for(const auto &cmd:it->second)draw_image(cmd.text,g_ctx->ox+x+cmd.x*scale,g_ctx->oy+y+cmd.y*scale,cmd.w*scale,cmd.h*scale,cmd.col,cmd.sx,cmd.sy,cmd.sw,cmd.sh);
+            lua_pushboolean(L,true);return 1;
+        }
+        int l_gui_release_image_batch(lua_State *L){
+            const char *name=luaL_checkstring(L,1);auto it=g_image_batches.find(g_current_mod+"#batch#"+name);
+            if(it!=g_image_batches.end()){g_batch_commands-=it->second.size();g_image_batches.erase(it);}return 0;
+        }
+        int l_gui_frame_stats(lua_State *L){
+            const auto &s=g_perf[g_current_mod];lua_createtable(L,0,4);
+            lua_pushnumber(L,s.callback_ms);lua_setfield(L,-2,"callback_ms");
+            lua_pushnumber(L,s.flush_ms);lua_setfield(L,-2,"flush_ms");
+            lua_pushinteger(L,s.commands);lua_setfield(L,-2,"commands");
+            lua_pushinteger(L,s.layers);lua_setfield(L,-2,"layers");return 1;
+        }
         const luaL_Reg gui_funcs[] = {
+                {"set_layer", l_gui_set_layer},
+                {"screen_size", l_gui_screen_size},
+                {"store_image_batch", l_gui_store_image_batch},
+                {"draw_image_batch", l_gui_draw_image_batch},
+                {"release_image_batch", l_gui_release_image_batch},
+                {"frame_stats", l_gui_frame_stats},
                 {"load_image", l_gui_load_image},
                 {"image_status", l_gui_image_status},
                 {"release_image", l_gui_release_image},
@@ -1812,6 +1910,11 @@ namespace lualoader::gui {
             std::vector<std::string> owners;
             for(const auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF)owners.push_back(kv.second->mod_id);
             images::prune(owners);
+            for(auto it=g_image_batches.begin();it!=g_image_batches.end();){
+                bool live=false;for(const auto &owner:owners)if(it->first.rfind(owner+"#batch#",0)==0){live=true;break;}
+                if(!live){g_batch_commands-=it->second.size();it=g_image_batches.erase(it);}else ++it;
+            }
+            for(auto it=g_perf.begin();it!=g_perf.end();){if(std::find(owners.begin(),owners.end(),it->first)==owners.end())it=g_perf.erase(it);else ++it;}
             auto owner_alive=[&owners](const std::string &key){for(const auto &id:owners)if(key.rfind(id+"#",0)==0)return true;return false;};
             if(g_edit.active && !owner_alive(g_edit.owner))g_edit=EditState{};
             for(auto it=g_headers.begin();it!=g_headers.end();){if(!owner_alive(it->first))it=g_headers.erase(it);else ++it;}
@@ -1868,7 +1971,7 @@ namespace lualoader::gui {
 
             g_style_window=nullptr;
             if (g_edit.active){
-                g_cmds.clear();g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
+                g_cmds.clear();g_layer=0;g_layered=false;g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
             }
             g_click_state.finish(g_mouse_down,g_mouse_released);
 
@@ -1974,6 +2077,7 @@ namespace lualoader::gui {
         g_image_release_queue.clear();
         g_style_window=nullptr;g_ctx=nullptr;g_sb=nullptr;g_recording=false;g_in_render=false;
         g_windows.clear();g_headers.clear();g_edit=EditState{};g_cmds.clear();g_next_window_order=0;
+        g_image_batches.clear();g_batch_commands=0;g_perf.clear();g_layer=0;g_layered=false;
         g_render_owner.clear();g_input_owner.clear();g_pointer_owner.clear();g_current_mod.clear();
         g_drag_id.clear();g_slider_active.clear();g_click_state.reset();
         g_mouse_down=g_prev_mouse_down=g_mouse_pressed=g_mouse_released=g_hover_gui=false;
