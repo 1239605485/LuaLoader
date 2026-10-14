@@ -27,6 +27,10 @@ struct NR {unsigned char yes;unsigned char pad[3];R value;};
 struct Entry {std::string path,root,error;int w=0,h=0;void *tex=nullptr;bool attempted=false,reported=false;
 #if defined(__ANDROID__)
 unsigned int pin=0;
+#else
+// PC：保留解码后的 RGBA 像素，用于按需裁剪出源矩形纹理（绕开 Nullable<Rectangle>）。
+std::vector<unsigned char> pixels;
+std::unordered_map<unsigned long long,void*> crops;
 #endif
 };
 std::unordered_map<std::string,Entry> cache;
@@ -73,11 +77,11 @@ void resolve(){
     }
  }
 #else
- auto nullable=patchlib_type_get_type("System","Nullable`1");
- tefstd_vector_t args{};tefstd_vector_init(&args,sizeof(void*));tefstd_vector_push_back(&args,&rect);
- auto nr=nullable?patchlib_type_make_generic_type(nullable,&args):nullptr;tefstd_vector_destroy(&args);
- void *types[]={texture,rect,nr,color};
- if(nr)draw_method=patchlib_type_get_method_by_param_types(sb,"Draw",4,types);
+ // PC：桌面反射无法编组 SpriteBatch.Draw 的 Nullable<Rectangle>（源矩形）参数，
+ // 会导致每次把整张纹理缩放进目标格子。这里改用无源矩形的
+ // Draw(Texture2D, Rectangle, Color)，源矩形由 CPU 预裁剪纹理实现。
+ void *types[]={texture,rect,color};
+ draw_method=patchlib_type_get_method_by_param_types(sb,"Draw",3,types);
 #endif
  LOG_INFO("[gui-image] draw interface={} texture API={}",draw_method!=nullptr,terraria_texture2d_create!=nullptr);
 }
@@ -118,6 +122,10 @@ bool load(Entry &e){
  const size_t count=static_cast<size_t>(e.w)*e.h*4;
  // XNA AlphaBlend expects premultiplied alpha.
  for(size_t i=0;i<count;i+=4){for(int j=0;j<3;++j)pixels[i+j]=static_cast<unsigned char>((pixels[i+j]*pixels[i+3]+127)/255);}
+#if !defined(__ANDROID__)
+ // PC：留存像素用于预裁剪。
+ e.pixels.assign(pixels,pixels+count);
+#endif
 #if defined(__ANDROID__)
  // Unity raw pixel data is bottom-up; Lua source rectangles use top-left coordinates.
  for(int y=0;y<e.h/2;++y)for(int x=0;x<e.w*4;++x)std::swap(pixels[y*e.w*4+x],pixels[(e.h-y-1)*e.w*4+x]);
@@ -133,6 +141,25 @@ bool load(Entry &e){
  texture_bytes+=count;
  LOG_INFO("[gui-image] loaded {} ({}x{})",e.path,e.w,e.h);return true;
 }
+#if !defined(__ANDROID__)
+// 按需把源矩形裁剪成独立纹理并缓存，供无源矩形的 Draw 使用。
+void *crop_texture(Entry &e,int sx,int sy,int sw,int sh){
+ if(sw<=0||sh<=0||sx<0||sy<0||sx+sw>e.w||sy+sh>e.h)return nullptr;
+ if(e.pixels.size()!=static_cast<size_t>(e.w)*e.h*4)return nullptr;
+ const unsigned long long key=(static_cast<unsigned long long>(sx)<<48)|(static_cast<unsigned long long>(sy)<<32)|
+                              (static_cast<unsigned long long>(sw)<<16)|static_cast<unsigned long long>(sh);
+ auto it=e.crops.find(key);if(it!=e.crops.end())return it->second;
+ std::vector<unsigned char> buf(static_cast<size_t>(sw)*sh*4);
+ for(int y=0;y<sh;++y)
+  std::memcpy(buf.data()+static_cast<size_t>(y)*sw*4,
+              e.pixels.data()+(static_cast<size_t>(sy+y)*e.w+sx)*4,
+              static_cast<size_t>(sw)*4);
+ void *t=nullptr;
+ try{t=terraria_texture2d_create(sw,sh,TEXTURE_FORMAT_RGBA32,buf.data(),buf.size());}catch(...){t=nullptr;}
+ if(t)e.crops.emplace(key,t);
+ return t;
+}
+#endif
 void part(void *sb,Entry &e,float x,float y,float w,float h,const void *color,R source){
  if(w<=0||h<=0||source.w<=0||source.h<=0)return;
 #if defined(__ANDROID__)
@@ -143,12 +170,13 @@ void part(void *sb,Entry &e,float x,float y,float w,float h,const void *color,R 
  unsigned int packed;std::memcpy(&packed,tint,4);
  if(fn)fn(sb,e.tex,V{x,y},&source,packed,0.0f,V{0,0},V{w/source.w,h/source.h},0,0.0f);
 #else
+ void *tex=crop_texture(e,source.x,source.y,source.w,source.h);
+ if(!tex)return;
  R dest{static_cast<int>(x),static_cast<int>(y),static_cast<int>(w),static_cast<int>(h)};
- NR nullable{1,{0,0,0},source};
  struct C{unsigned char r,g,b,a;unsigned int packed;} tint;
  std::memcpy(&tint,color,sizeof(tint));tint.r=(tint.r*tint.a+127)/255;tint.g=(tint.g*tint.a+127)/255;tint.b=(tint.b*tint.a+127)/255;
  tint.packed=tint.r|(tint.g<<8)|(tint.b<<16)|(static_cast<unsigned int>(tint.a)<<24);
- void *args[]={&e.tex,&dest,&nullable,&tint};
+ void *args[]={&tex,&dest,&tint};
  patchlib_method_invoke_args(draw_method,sb,nullptr,args);
 #endif
 }
