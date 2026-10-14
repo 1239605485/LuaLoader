@@ -150,8 +150,6 @@ function on_gui()
 end
 ```
 
-`examples/TaskPanel` 提供金色、蓝色两套 SVG/PNG 皮肤，点击切换即可验证更换素材，无需改加载器。
-
 ### 约束与资源管理
 
 - 仅支持 PNG，最大 2048×2048，文件不超过 16 MiB；最多缓存 128 张、合计 64 MiB RGBA 纹理。
