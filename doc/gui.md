@@ -11,10 +11,34 @@
   - **PE（Android）**：走 Unity 上的 **XNA 兼容层**；
   三端表现一致。
 - 文本：`Terraria.Utils.DrawBorderString`；面板/按钮/轨道背景：`Terraria.Utils.DrawInvBG`。
+- 窗口内的所有坐标（包括自定义布局与图片）都以**窗口内容区左上角**为原点，单位为屏幕像素。
 
-## 2. Lua 接口
+## 2. 窗口控制
 
-控件（即时模式，返回值写回即可）：
+| 函数 | 说明 |
+|---|---|
+| `mod.gui.set_pos(x, y)` | 设置窗口左上角位置（屏幕像素） |
+| `mod.gui.get_pos()` → `x, y` | 取当前窗口位置 |
+| `mod.gui.set_width(w)` | 设置窗口宽度（高度随内容自适应） |
+| `mod.gui.set_visible(v)` → `v` | 显示 / 隐藏窗口 |
+| `mod.gui.is_visible()` → `bool` | 当前是否显示 |
+| `mod.gui.show()` / `mod.gui.hide()` | 显示 / 隐藏 |
+| `mod.gui.set_collapsed(v)` → `v` | 收起 / 展开 |
+| `mod.gui.is_collapsed()` → `bool` | 当前是否收起 |
+| `mod.gui.toggle_collapsed()` | 切换收起 / 展开 |
+| `mod.gui.set_title(title, icon?)` | 设置窗口标题；`icon` 建议一个字，作为收起入口 |
+| `mod.gui.set_cursor(x, y)` | 移动布局光标（相对内容区左上角），之后控件从该处开始画 |
+| `mod.gui.set_content_height(h)` | 使用自定义布局时声明内容高度，避免窗口高度不足 |
+
+- 标题栏左端有一个箭头按钮：`v` 展开、`>` 收起（点击即切换，像 ImGui 的折叠）。
+- 收起时若未设置 `icon`，只保留标题栏；若设置了 `icon`（且未使用图片皮肤），则收成一个
+  可拖动的**紧凑入口方块**，点击展开。设置 `set_skin` 的图标后会以皮肤图片作为收起入口。
+- 收起后不绘制内容也不回调 `on_gui`，可显著减少对视野的遮挡。
+- 移动位置只需首次设置，否则每帧重设会阻止拖动。
+
+## 3. 内置控件（即时模式）
+
+控件按顺序自上而下排列；把返回值写回即可：
 
 | 函数 | 返回值 | 说明 |
 |---|---|---|
@@ -28,24 +52,6 @@
 | `mod.gui.separator()` / `mod.gui.spacing()` | – | 分隔线 / 空行 |
 | `mod.gui.collapsing_header(label)` | `bool` | 可折叠标题 |
 | `mod.gui.progress_bar(v)` | – | 进度条（0.0~1.0，带百分比） |
-
-窗口定位与显隐（1.7.0 新增）：
-
-| 函数 | 说明 |
-|---|---|
-| `mod.gui.set_pos(x, y)` | 设置窗口左上角位置（屏幕像素） |
-| `mod.gui.get_pos()` → `x, y` | 取当前窗口位置 |
-| `mod.gui.set_width(w)` | 设置窗口宽度（高度随内容自适应） |
-| `mod.gui.set_cursor(x, y)` | 移动布局光标（相对内容区左上角），之后控件从该处开始画 |
-| `mod.gui.set_visible(v)` → `v` | 显示 / 隐藏窗口 |
-| `mod.gui.is_visible()` → `bool` | 当前是否显示 |
-| `mod.gui.show()` / `mod.gui.hide()` | 显示 / 隐藏 |
-| `mod.gui.set_collapsed(v)` → `v` | 收起 / 展开（收起后只留标题栏） |
-| `mod.gui.is_collapsed()` → `bool` | 当前是否收起 |
-| `mod.gui.toggle_collapsed()` | 切换收起 / 展开 |
-
-> 窗口标题栏左端有一个箭头按钮：`v` 展开、`>` 收起（点击即切换，像 ImGui 的折叠）。
-> 收起后只保留标题栏，不绘制内容也不回调 `on_gui`，可显著减少对视野的遮挡。
 
 示例：
 
@@ -68,36 +74,126 @@ end
 > 不响应点击，也不屏蔽游戏鼠标。可用热键 / 聊天指令改动自己的标志位后在 `on_gui` 里
 > `set_visible(flag)`，即可实现“按需出现”。
 
-## 3. 实现要点
+## 4. 自定义布局与配色
 
-- **绘制时机**：钩住 `Terraria.Main.Draw(GameTime)` 后置。此时游戏本帧的
-  `spriteBatch` 已 `End`，加载器自行 `Begin`/`End` 绘制。
-- **启动画面**：`Main.showSplash` 为真时跳过绘制。启动阶段贴图/字体尚未就绪，
-  直接调用 `DrawInvBG`/`DrawBorderString` 会解引用空资源而崩溃。
-- **绘制指令队列**：`on_gui` 回调内的 `mod.gui.*` **只记录绘制指令**；回调返回、
-  离开 Lua VM 后，再由 C++ 统一执行托管绘制调用。原因见下节“Android 注意”。
-- **输入**：指针位置与按键取自游戏自身（`Main.mouseX/Y`、`Main.mouseLeft` 等），
-  因此各平台一致；指针悬停在窗口上时会屏蔽游戏的鼠标，避免误触。
-- **文本输入**：自绘输入框 + 屏幕底部虚拟键盘（不依赖系统输入法）。
+不使用内置控件、自己摆放时，可用下面这些接口。`color` 均为 `{R,G,B,A}`，
+通道 0~255，`A` 可省略（默认 255）。
 
-## 4. 平台差异与已知问题
+| 函数 | 说明 |
+|---|---|
+| `mod.gui.set_style(t)` | 覆盖当前 Mod 窗口的配色，只影响调用者 |
+| `mod.gui.rect(x,y,w,h,color)` | 绘制游戏原生背景块（沿用 `DrawInvBG` 纹理，不是无纹理纯色矩形） |
+| `mod.gui.text_at(x,y,text,color,scale=1)` | 自定义位置、颜色、字号（`scale` 范围 0~4） |
+| `mod.gui.button_at(x,y,w,h,label)` | 自定义位置和尺寸，松手命中时返回 `true` |
+| `mod.gui.set_content_height(h)` | 声明内容高度，避免窗口高度不足 |
 
-### 4.1 PE（Android）窗口位于游戏 HUD 之下
+`set_style` 的键：`panel`、`title`、`button`、`hover`、`active`、`border`、`text`。
 
-PE 上掩码来自游戏自身界面的绘制时序：加载器挂在 `Main.Draw` 后置，
-而部分游戏 UI 在其之后才画，因此窗口会显示在 HUD/菜单**之下**。
-这是已知的层级限制，暂未强行置顶（通过 `XNAUnityRunner` 等更靠后的点绘制会导致
-只在切场景时闪现一帧，稳定性差）。
+```lua
+function on_gui()
+    local g = mod.gui
+    g.set_title("任务手册", "册")
+    g.set_width(300)
+    g.set_style({panel={18,29,40,245}, title={29,57,69,255},
+                 button={33,67,78,255}, hover={46,96,109,255},
+                 border={9,19,27,255}, text={228,237,232,255}})
+    g.rect(0,0,276,72,{24,48,59,255})
+    g.text_at(12,12,"任务介绍",{232,220,165,255},1)
+    if g.button_at(0,90,276,42,"查看任务") then
+        -- 切换自己的页面状态
+    end
+    g.set_content_height(140)
+end
+```
 
-### 4.2 Android 按值结构体 FFI（重要）
+> 显式定位的控件需自己保持在窗口内容区内；当前没有裁剪 API、圆角参数等。
 
-Android 上，内核 `patchlib_method_invoke_args` 通过 libffi 按参数类型自动编组。
-当方法含**按值传递的结构体参数/返回值**（如 `Vector2`、`Color`、`Rectangle`，
-它们都带静态成员）时，内核生成的 `ffi_type` 布局有误，导致托管方法收到错位参数
-并抛异常，进而在 C 层未捕获 → `std::terminate` → `SIGABRT`。
+## 5. 图片与皮肤
 
-加载器因此在 Android 上对两个绘制方法改走 **原生函数指针 + 手写 ABI** 直调，
-完全绕开上述 FFI 路径：
+资源由模组提供，PNG 放在模组 `Resources/lib/ui` 下，加载路径写 `lib/ui/example.png`。
+加载仅注册资源；实际解码、上传和绘制在 Lua 回调结束后执行。可用于任务面板、商店、
+背包卡片、状态条和小图标等，文字仍使用游戏字体。
+
+| 接口 | 用法 |
+|---|---|
+| `load_image(path)` | 返回该模组独享的图片 ID，非法路径返回 `nil` |
+| `image_status(id)` | 返回 `status,width,height`；status 为 `pending` / `ready` / `failed:原因` / `invalid` |
+| `release_image(id)` | 将释放排到下一渲染帧，释放后的旧 ID 不可再用 |
+| `image(id,x,y,w,h,color?,source?)` | 拉伸绘制；`source={sx,sy,sw,sh}` 为图片像素裁切，可用于图集 |
+| `image_fit(id,x,y,w,h,mode?,color?)` | `contain` 完整等比显示；`cover` 等比填满并居中裁切 |
+| `nine_slice(id,x,y,w,h,border,color?,edge?)` | 等宽四边九宫格；角固定，边和中央伸缩 |
+| `image_button(id,x,y,w,h,label?,border?)` | 图片按钮，松手命中返回 `true`；`border>0` 使用九宫格 |
+| `set_skin(panelId,border,iconId,iconSize=48,edge=0)` | 当前 Mod 窗口的面板皮肤与收起入口图片 |
+
+- `color` 默认白色，可用透明度/颜色调制做高亮、淡出等效果。
+- 九宫格的 `border` 是源图片像素，目标边框保持同样像素大小；窗口小于两倍边框时压缩边框。
+  `edge` 可指定目标边框像素（例如源边框 300、显示 36）；不传时维持旧行为。
+- `white.png`（1×1 白图）可用 `image` 拉伸加颜色形成真正的纯色矩形、进度条或装饰线；
+  旧 `rect` 仍使用原版背景纹理。
+
+```lua
+local images={}
+function on_gui()
+    local g=mod.gui
+    if not images.panel then
+        images.panel=g.load_image("lib/ui/panel.png")
+        images.icon=g.load_image("lib/ui/book.png")
+        images.button=g.load_image("lib/ui/button.png")
+        g.set_title("任务", "册")
+        g.set_width(300)
+        g.set_skin(images.panel,18,images.icon,48)
+    end
+    if g.image_button(images.button,12,20,250,44,"查看任务",12) then
+        -- 修改你自己的页面状态
+    end
+    g.set_content_height(90)
+end
+```
+
+`examples/TaskPanel` 提供金色、蓝色两套 SVG/PNG 皮肤，点击切换即可验证更换素材，无需改加载器。
+
+### 约束与资源管理
+
+- 仅支持 PNG，最大 2048×2048，文件不超过 16 MiB；最多缓存 128 张、合计 64 MiB RGBA 纹理。
+- 路径限制在该模组私有资源目录，禁止绝对路径、父目录跳转和越界符号链接；不同模组的图片 ID 不能混用。
+- 同一模组同一路径复用缓存；卸载模组后在渲染线程清理资源，隐藏窗口不等于卸载。
+- 自定义控件需自己保持在窗口内容区内；暂无裁剪/遮罩、旋转、任意矢量曲线、模糊或着色器 API，
+  不同形状和圆角可用透明 PNG 实现。
+- 图片按钮当前使用矩形点击区域，高亮是颜色调制；点击反馈状态可由模组切换另一张图片实现，
+  暂无按透明像素命中检测。
+
+## 6. 虚拟键盘
+
+`input_text` 不依赖系统输入法：点击输入框后弹出屏幕底部自绘键盘，并屏蔽该手指对游戏的
+输入分发（键盘区域内的触摸不会落到游戏上）。键盘几何由 `includes/gui_keyboard_bounds.hpp`
+统一定义，热区与实际按键一致。
+
+## 7. 实现要点
+
+- **绘制时机**：钩住 `Terraria.Main.Draw(GameTime)` 后置。此时游戏本帧的 `spriteBatch`
+  已 `End`，加载器自行 `Begin`/`End` 绘制。
+- **启动画面**：`Main.showSplash` 为真时跳过绘制。启动阶段贴图/字体尚未就绪，直接调用
+  `DrawInvBG`/`DrawBorderString` 会解引用空资源而崩溃。
+- **绘制指令队列**：`on_gui` 回调内的 `mod.gui.*` **只记录绘制指令**；回调返回、离开 Lua VM
+  后，再由 C++ 统一执行托管绘制调用。原因见下节“Android 注意”。
+- **输入**：指针位置与按键取自游戏自身（`Main.mouseX/Y`、`Main.mouseLeft` 等），因此各平台
+  一致；指针悬停在窗口上时会屏蔽游戏的鼠标，避免误触。
+
+## 8. 平台差异与已知问题
+
+### 8.1 PE（Android）窗口位于游戏 HUD 之下
+
+PE 上窗口会显示在 HUD/菜单**之下**：加载器挂在 `Main.Draw` 后置，而部分游戏 UI 在其之后
+才画。这是已知的层级限制，暂未强行置顶（改到更靠后的点绘制会导致只在切场景时闪现一帧）。
+
+### 8.2 Android 按值结构体 FFI（重要）
+
+Android 上内核 `patchlib_method_invoke_args` 通过 libffi 按参数类型自动编组。当方法含
+**按值传递的结构体参数/返回值**（如 `Vector2`、`Color`、`Rectangle`，它们都带静态成员）时，
+内核生成的 `ffi_type` 布局有误，导致托管方法收到错位参数并抛异常，在 C 层未捕获 →
+`std::terminate` → `SIGABRT`。
+
+加载器因此在 Android 上对绘制方法改走 **原生函数指针 + 手写 ABI** 直调，完全绕开该路径：
 
 ```cpp
 using FnDrawInvBG  = void (*)(void* sb, Rectangle r, Color c);
@@ -105,25 +201,32 @@ using FnDrawString = Vector2 (*)(void* sb, void* text, Vector2 pos, Color color,
                                  float scale, float ax, float ay, int32_t maxChars);
 ```
 
-> 详细的内核缺陷分析（三处：静态字段未过滤、值类型字段被当指针、返回类型句柄类型
-> 不一致）见 TEFKernel 仓库 `documents/patchlib-ffi-struct-bug.md`。
-> 内核修复后，加载器可撤掉该直调、统一切回 `patchlib_method_invoke_args`。
+> 详细的内核缺陷分析（静态字段未过滤、值类型字段被当指针、返回类型句柄类型不一致）见
+> TEFKernel 仓库 `documents/patchlib-ffi-struct-bug.md`。内核修复后，加载器可撤掉该直调、
+> 统一切回 `patchlib_method_invoke_args`。
 
-### 4.3 PC 光标 / tooltip 与窗口的层级
+### 8.3 PC 图片绘制：`Nullable<Rectangle>` 编组
 
-PC 的游戏光标与物品 tooltip 属于顶层接口图层。加载器**不再重绘**它们——重绘会在
-非 100% UI 缩放（`UIScaleMatrix`）时产生第二个光标。当前实现仅绘制窗口本身，
-因此当窗口恰好盖住光标时，光标会显示在窗口之下（已知小瑕疵）。
+PC 走桌面反射路径。桌面反射**无法编组** `SpriteBatch.Draw` 的 `Nullable<Rectangle>`
+（源矩形）参数，回退后源矩形变成 `null`，会把整张纹理缩放进目标格子（皮肤放大/错位）。
 
-> 若后续需要“窗口在光标之下”，应改为把窗口绘制插入到接口图层顺序中（光标层之前），
-> 而不是重绘光标。
+加载器因此在 PC 侧把源矩形**按需预裁剪成独立纹理并缓存**，再以无源矩形的
+`Draw(Texture2D, Rectangle, Color)` 绘制，绕开 `Nullable` 编组。Android 分支不受影响。
 
-## 5. 关闭 GUI（排查用）
+### 8.4 PC 光标 / tooltip 与窗口的层级
+
+PC 的游戏光标与物品 tooltip 属于顶层接口图层。加载器**不再重绘**它们——重绘会在非 100%
+UI 缩放（`UIScaleMatrix`）时产生第二个光标。当前实现仅绘制窗口本身，因此当窗口恰好盖住
+光标时，光标会显示在窗口之下（已知小瑕疵）。
+
+> 若后续需要“窗口在光标之下”，应把窗口绘制插入到接口图层顺序中（光标层之前），而不是重绘光标。
+
+## 9. 关闭 GUI（排查用）
 
 设环境变量 `LUALOADER_GUI_DISABLE=1` 可整体禁用 GUI（不影响其它功能）。
 日志中会输出 `[gui] native GUI disabled by LUALOADER_GUI_DISABLE`。
 
-## 6. 向后兼容
+## 10. 向后兼容
 
-`mod.gui.*` 的函数名、参数、返回语义与旧 ImGui 版本保持一致，旧 Mod 无需修改。
-新增的定位/显隐函数为可选。
+`mod.gui.*` 的既有函数名、参数、返回语义与旧 ImGui 版本保持一致，旧 Mod 无需修改。
+第 4、5 节的布局与图片接口为新增可选能力。

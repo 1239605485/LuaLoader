@@ -5,7 +5,7 @@
   "version": "1.4.0",
   "versionCode": 7,
   "brieflyDescribe": "游戏原生按钮与任务介绍二级界面。",
-  "description": "黑金雕花、金色纸张、冰蓝纸张三套皮肤。首页/任务列表/详情均可换肤，配套1.9.2加载器支持入口拖动和分隔黑条修复。",
+  "description": "黑金雕花、金色纸张、冰蓝纸张三套皮肤。首页/任务列表/详情均可换肤，需搭配支持入口拖动与自定义图片皮肤的 LuaLoader。",
   "features": [
     "UI_IMPROVEMENT",
     "UTILITY"

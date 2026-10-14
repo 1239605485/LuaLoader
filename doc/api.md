@@ -180,6 +180,22 @@ end
 | `mod.gui.set_collapsed(v)` | `bool` | 收起/展开窗口（收起后只留标题栏） |
 | `mod.gui.is_collapsed()` | `bool` | 当前是否收起 |
 | `mod.gui.toggle_collapsed()` | – | 切换收起/展开 |
+| `mod.gui.set_title(title, icon?)` | – | 设置标题与收起入口文字（`icon` 建议一个字） |
+| `mod.gui.set_content_height(h)` | – | 自定义布局时声明内容高度 |
+| `mod.gui.set_style(t)` | – | 覆盖当前 Mod 的配色（panel/title/button/hover/active/border/text） |
+| `mod.gui.rect(x,y,w,h,color)` | – | 自定义位置的原生背景块 |
+| `mod.gui.text_at(x,y,text,color,scale?)` | – | 自定义位置/颜色/字号的文本 |
+| `mod.gui.button_at(x,y,w,h,label)` | `bool` | 自定义位置和尺寸的按钮 |
+| `mod.gui.load_image(path)` | `id`/`nil` | 注册模组私有图片，返回图片 ID |
+| `mod.gui.image_status(id)` | `status,w,h` | 查询图片加载状态 |
+| `mod.gui.image(id,x,y,w,h,color?,source?)` | – | 拉伸绘制，可指定像素裁切 |
+| `mod.gui.image_fit(id,x,y,w,h,mode?,color?)` | – | 等比完整显示（contain）或填满裁切（cover） |
+| `mod.gui.nine_slice(id,x,y,w,h,border,color?,edge?)` | – | 九宫格伸缩绘制 |
+| `mod.gui.image_button(id,x,y,w,h,label?,border?)` | `bool` | 图片按钮 |
+| `mod.gui.set_skin(panelId,border,iconId,iconSize?,edge?)` | – | 设置窗口面板皮肤与收起入口图标 |
+| `mod.gui.release_image(id)` | – | 下一帧释放图片 |
+
+> 自定义布局与图片/皮肤的完整说明（约束、资源限制、平台差异）见 [`doc/gui.md`](gui.md)。
 
 > 窗口位置与显隐由 Mod 控制。隐藏时**仍会回调 `on_gui`**（方便 Mod 在回调里通过
 > `mod.gui.show()` / `set_visible(true)` 重新显示），但控件不绘制、不响应输入。
