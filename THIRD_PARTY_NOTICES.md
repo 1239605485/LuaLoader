@@ -28,7 +28,7 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 | `LICENSES/MIT-json.txt` | nlohmann/json v3.12.0 | <https://raw.githubusercontent.com/nlohmann/json/v3.12.0/LICENSE.MIT> |
 | `LICENSES/MIT-tefkernel.txt` | TEFKernel 头文件 | `includes/tefkernel/tef_api.h`（随附头文件） |
 | `LICENSES/MIT-kernelloader.txt` | KernelLoader `mod_logger.h` | `mod-api/mod_logger.h`（随附头文件） |
-| `LICENSES/MIT-stb_image.txt` | stb_image 2.30 | <https://raw.githubusercontent.com/nothings/stb/master/LICENSE> |
+| `LICENSES/stb_image.txt` | stb_image 2.30 | <https://raw.githubusercontent.com/nothings/stb/master/LICENSE> |
 | `LICENSES/MIT-xdl.txt` | xDL 2.3.0 | <https://raw.githubusercontent.com/hexhacking/xDL/master/LICENSE> |
 
 ## 说明
