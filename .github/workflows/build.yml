@@ -22,7 +22,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- 下载 TEFKernel----------
+      # ---------- 禁止 example/examples 目录 ----------
+      - name: Check for forbidden example directories
+        shell: bash
+        run: |
+          found=0
+          for p in "LuaLoader/example" "LuaLoader/examples"; do
+            if [ -e "$p" ]; then
+              echo "::error file=$p::检测到禁止的目录: $p"
+              found=1
+            fi
+          done
+          if [ "$found" -eq 1 ]; then
+            echo ""
+            echo "=========================================="
+            echo "错误：检测到 LuaLoader/example 或 LuaLoader/examples 目录。"
+            echo "请勿在仓库中提交示例目录，改用文档（docs/）来说明用法。"
+            echo "相关目录应删除或迁移到文档中。"
+            echo "=========================================="
+            exit 1
+          fi
+          echo "检查通过：未发现 example/examples 目录。"
+
+      # ---------- 下载 TEFKernel ----------
       - name: Cache TEFKernel
         id: cache-tefkernel
         uses: actions/cache@v4
