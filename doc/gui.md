@@ -5,7 +5,7 @@
 
 ## 1. 概览
 
-- 只要定义了全局函数 `on_gui`（即 `mod.on_gui`），加载器就会为该 Mod 创建一个**可拖动窗口**，每帧回调一次。
+- 只要定义了回调 `mod.on_gui`，加载器就会为该 Mod 创建一个**可拖动窗口**，每帧回调一次。
 - 绘制全部走游戏的 `SpriteBatch` 与 `Terraria.Utils`，因此在
   - **PC**：Windows 走 **XNA**，其它平台走 **FNA**；
   - **PE（Android）**：走 Unity 上的 **XNA 兼容层**；
@@ -31,8 +31,8 @@
 | `mod.gui.set_content_height(h)` | 使用自定义布局时声明内容高度，避免窗口高度不足 |
 
 - 标题栏左端有一个箭头按钮：`v` 展开、`>` 收起（点击即切换，像 ImGui 的折叠）。
-- 收起时若未设置 `icon`，只保留标题栏；若设置了 `icon`（且未使用图片皮肤），则收成一个
-  可拖动的**紧凑入口方块**，点击展开。设置 `set_skin` 的图标后会以皮肤图片作为收起入口。
+- 收起时显示可拖动的方形图标，点击展开；`set_title` 的 `icon` 参数作为文字图标，
+  `set_skin` 的图标参数作为图片入口。
 - 收起后不绘制内容也不回调 `on_gui`，可显著减少对视野的遮挡。
 - 移动位置只需首次设置，否则每帧重设会阻止拖动。
 
@@ -42,8 +42,8 @@
 
 | 函数 | 返回值 | 说明 |
 |---|---|---|
-| `mod.gui.text(s)` | – | 一行文本 |
-| `mod.gui.text_wrapped(s)` | – | 按窗口宽度自动换行 |
+| `mod.gui.text(s, color?)` | – | 一行文本 |
+| `mod.gui.text_wrapped(s, color?)` | – | 按窗口宽度自动换行 |
 | `mod.gui.button(label)` | `bool` | 按钮；本帧被点击返回 true |
 | `mod.gui.checkbox(label, v)` | `bool` | 复选框 |
 | `mod.gui.slider(label, v, min, max)` | `number` | 滑条 |
@@ -76,8 +76,8 @@ end
 
 ## 4. 自定义布局与配色
 
-不使用内置控件、自己摆放时，可用下面这些接口。`color` 均为 `{R,G,B,A}`，
-通道 0~255，`A` 可省略（默认 255）。
+不使用内置控件、自己摆放时，可用下面这些接口。`color` 可用 `{R,G,B,A}` 或 `{r=R,g=G,b=B,a=A}`，
+通道 0~255，`A` 可省略（默认 255）；不传颜色时沿用主题文字颜色。
 
 | 函数 | 说明 |
 |---|---|
@@ -90,7 +90,7 @@ end
 `set_style` 的键：`panel`、`title`、`button`、`hover`、`active`、`border`、`text`。
 
 ```lua
-function on_gui()
+function mod.on_gui()
     local g = mod.gui
     g.set_title("任务手册", "册")
     g.set_width(300)
@@ -106,7 +106,7 @@ function on_gui()
 end
 ```
 
-> 显式定位的控件需自己保持在窗口内容区内；当前没有裁剪 API、圆角参数等。
+> 显式定位的控件需自己保持在窗口内容区内；滚动容器提供视口裁剪；圆角可使用透明 PNG。
 
 ## 5. 图片与皮肤
 
@@ -133,7 +133,7 @@ end
 
 ```lua
 local images={}
-function on_gui()
+function mod.on_gui()
     local g=mod.gui
     if not images.panel then
         images.panel=g.load_image("lib/ui/panel.png")
@@ -150,14 +150,12 @@ function on_gui()
 end
 ```
 
-`examples/TaskPanel` 提供金色、蓝色两套 SVG/PNG 皮肤，点击切换即可验证更换素材，无需改加载器。
-
 ### 约束与资源管理
 
-- 仅支持 PNG，最大 2048×2048，文件不超过 16 MiB；最多缓存 128 张、合计 64 MiB RGBA 纹理。
+- 仅支持 PNG，最大 2048×2048，文件不超过 16 MiB；最多注册 4096 个图片描述符；默认纹理缓存预算为估算 32 MiB，闲置资源自动淘汰，再次绘制时重新加载。
 - 路径限制在该模组私有资源目录，禁止绝对路径、父目录跳转和越界符号链接；不同模组的图片 ID 不能混用。
 - 同一模组同一路径复用缓存；卸载模组后在渲染线程清理资源，隐藏窗口不等于卸载。
-- 自定义控件需自己保持在窗口内容区内；暂无裁剪/遮罩、旋转、任意矢量曲线、模糊或着色器 API，
+- 自定义控件需自己保持在窗口内容区内；滚动容器支持视口裁剪；暂无任意遮罩、旋转、矢量曲线、模糊或着色器 API，
   不同形状和圆角可用透明 PNG 实现。
 - 图片按钮当前使用矩形点击区域，高亮是颜色调制；点击反馈状态可由模组切换另一张图片实现，
   暂无按透明像素命中检测。
@@ -179,54 +177,56 @@ end
 - **输入**：指针位置与按键取自游戏自身（`Main.mouseX/Y`、`Main.mouseLeft` 等），因此各平台
   一致；指针悬停在窗口上时会屏蔽游戏的鼠标，避免误触。
 
-## 8. 平台差异与已知问题
-
-### 8.1 PE（Android）窗口位于游戏 HUD 之下
-
-PE 上窗口会显示在 HUD/菜单**之下**：加载器挂在 `Main.Draw` 后置，而部分游戏 UI 在其之后
-才画。这是已知的层级限制，暂未强行置顶（改到更靠后的点绘制会导致只在切场景时闪现一帧）。
-
-### 8.2 Android 按值结构体 FFI（重要）
-
-Android 上内核 `patchlib_method_invoke_args` 通过 libffi 按参数类型自动编组。当方法含
-**按值传递的结构体参数/返回值**（如 `Vector2`、`Color`、`Rectangle`，它们都带静态成员）时，
-内核生成的 `ffi_type` 布局有误，导致托管方法收到错位参数并抛异常，在 C 层未捕获 →
-`std::terminate` → `SIGABRT`。
-
-加载器因此在 Android 上对绘制方法改走 **原生函数指针 + 手写 ABI** 直调，完全绕开该路径：
-
-```cpp
-using FnDrawInvBG  = void (*)(void* sb, Rectangle r, Color c);
-using FnDrawString = Vector2 (*)(void* sb, void* text, Vector2 pos, Color color,
-                                 float scale, float ax, float ay, int32_t maxChars);
-```
-
-> 详细的内核缺陷分析（静态字段未过滤、值类型字段被当指针、返回类型句柄类型不一致）见
-> TEFKernel 仓库 `documents/patchlib-ffi-struct-bug.md`。内核修复后，加载器可撤掉该直调、
-> 统一切回 `patchlib_method_invoke_args`。
-
-### 8.3 PC 图片绘制：`Nullable<Rectangle>` 编组
-
-PC 走桌面反射路径。桌面反射**无法编组** `SpriteBatch.Draw` 的 `Nullable<Rectangle>`
-（源矩形）参数，回退后源矩形变成 `null`，会把整张纹理缩放进目标格子（皮肤放大/错位）。
-
-加载器因此在 PC 侧把源矩形**按需预裁剪成独立纹理并缓存**，再以无源矩形的
-`Draw(Texture2D, Rectangle, Color)` 绘制，绕开 `Nullable` 编组。Android 分支不受影响。
-
-### 8.4 PC 光标 / tooltip 与窗口的层级
-
-PC 的游戏光标与物品 tooltip 属于顶层接口图层。加载器**不再重绘**它们——重绘会在非 100%
-UI 缩放（`UIScaleMatrix`）时产生第二个光标。当前实现仅绘制窗口本身，因此当窗口恰好盖住
-光标时，光标会显示在窗口之下（已知小瑕疵）。
-
-> 若后续需要“窗口在光标之下”，应把窗口绘制插入到接口图层顺序中（光标层之前），而不是重绘光标。
-
-## 9. 关闭 GUI（排查用）
+## 8. 关闭 GUI（排查用）
 
 设环境变量 `LUALOADER_GUI_DISABLE=1` 可整体禁用 GUI（不影响其它功能）。
 日志中会输出 `[gui] native GUI disabled by LUALOADER_GUI_DISABLE`。
 
-## 10. 向后兼容
+## 9. 向后兼容
 
 `mod.gui.*` 的既有函数名、参数、返回语义与旧 ImGui 版本保持一致，旧 Mod 无需修改。
 第 4、5 节的布局与图片接口为新增可选能力。
+
+## 10. 滚动容器
+
+```lua
+local initialized = false
+function mod.on_gui()
+    local g = mod.gui
+    if not initialized then
+        g.set_title("配方", "册")
+        g.set_width(380)
+        initialized = true
+    end
+    local count, row = 200, 44
+    local _, sy, _, vh = g.begin_scroll("recipes", 0, 0, 350, 220, 350, count * row)
+    local first = math.max(1, math.floor(sy / row) + 1)
+    local last = math.min(count, math.ceil((sy + vh) / row))
+    for i = first, last do
+        if g.button_at(0, (i - 1) * row, 320, 40, "配方 " .. i) then
+            -- 在此更新选中项。
+        end
+    end
+    g.end_scroll()
+    g.set_content_height(230)
+end
+```
+
+- `begin_scroll(id,x,y,w,h,content_w,content_h)` 返回 `sx,sy,vw,vh`；内部坐标相对于内容，自动减去滚动偏移。只提交可见项，图片也仅为可见项加载。
+- 每次 `begin_scroll` 必须配对 `end_scroll()`；使用稳定且不同的 ID 区分容器。横向滚动同理，按 `sx/vw` 计算可见列。
+- `scroll_to(id,x,y)` 设置滚动位置。位置在会话中保留，不写入磁盘。
+- 支持拖动内容、滑轨及滚轮（需游戏提供滚轮接口）；滚动后取消本次按钮点击。嵌套容器由更深层命中区域接管拖动，外层滑轨除外；滚轮由先命中的外层接管。
+- 文字及桌面图片在边缘不完整时整项隐藏；Android 图片按视口裁剪。长文字需按列宽换行或省略。
+
+## 11. 图标文件夹与布局
+
+- 将收起图标拖到另一个图标或文件夹上，重叠停留至少 350 ms 后松手合并；点击文件夹展开，点击成员打开窗口。
+- 从展开网格拖出成员可移出文件夹；不足两个成员时解除分组。超过九个成员使用顶部按钮翻页，点击外部关闭。
+- 分组及位置自动保存在加载器私有目录 `gui_layout.json`；缺失或禁用的模组保留记录。保存失败会重试。
+- 仅管理加载器原生窗口图标，模组自行绘制的悬浮按钮不会自动加入。
+
+## 12. 图片与文字性能
+
+- 图片按需分帧加载，每帧最多上传两张；已上传一张后，累计上传量达到调度预算或耗时阈值时，其余请求延后。单张 PNG 解码仍为同步操作。
+- `image_cache_stats()` 返回估算缓存字节、预算字节、描述符数量、累计淘汰次数；预算不包含解码临时内存、驱动内部副本或游戏资源。
+- 模组应复用图片 ID，背景按实际显示尺寸制作，并只绘制可见列表项。固定文字由加载器缓存，不需要每帧生成文字图片。

@@ -1,8 +1,0 @@
-{
-  "main": "main.lua",
-  "pkg_id": "lzup.lua.taskpanel",
-  "version": "1.4.0",
-  "version_code": 7,
-  "api_version": 1,
-  "multiplayer_safe": true
-}

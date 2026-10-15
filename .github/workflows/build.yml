@@ -1,0 +1,112 @@
+name: Build LuaLoader
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '创建 Release'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---------- 下载 TEFKernel----------
+      - name: Cache TEFKernel
+        id: cache-tefkernel
+        uses: actions/cache@v4
+        with:
+          path: tefkernel
+          key: tefkernel-1.1.1
+
+      - name: Download TEFKernel
+        if: steps.cache-tefkernel.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p tefkernel
+          curl -L -o tefkernel.zip \
+            https://github.com/eternalfuture-e38299/TEFKernel/releases/download/1.1.1/tefkernel.zip
+          unzip -o tefkernel.zip -d tefkernel/
+          ls -la tefkernel/
+
+      # ---------- 交叉编译依赖 ----------
+      - name: Install mingw-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 gcc-multilib g++-multilib clang zip unzip
+
+      - name: Select MinGW POSIX compilers
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/lualoader-compilers"
+          for arch in x86_64 i686; do
+            for compiler in gcc g++; do
+              ln -sf "$(command -v ${arch}-w64-mingw32-${compiler}-posix)" "$RUNNER_TEMP/lualoader-compilers/${arch}-w64-mingw32-${compiler}"
+            done
+          done
+          echo "$RUNNER_TEMP/lualoader-compilers" >> "$GITHUB_PATH"
+
+      - name: Read version
+        id: metadata
+        shell: bash
+        run: |
+          python3 -c 'import json; print("version=" + json.load(open("Info.json"))["version"])' >> "$GITHUB_OUTPUT"
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r28
+
+      - name: Export env
+        shell: bash
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "TEFKERNEL_LIB=${{ github.workspace }}/tefkernel/libtefkernel.linux.x86_64.so" >> $GITHUB_ENV
+
+      # ---------- 构建 + 打包 ----------
+      - name: Build & package
+        shell: bash
+        run: |
+          chmod +x build.sh
+          ./build.sh -r --package
+
+      # ---------- 上传产物 ----------
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LuaLoader-package
+          path: dist/
+          if-no-files-found: error
+
+  # ---------- 仅在勾选时创建 Release ----------
+  release:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: LuaLoader-package
+          path: dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          tag_name: v${{ needs.build.outputs.version }}

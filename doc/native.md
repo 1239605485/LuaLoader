@@ -85,7 +85,7 @@ print(hello())            -- hello
 
 - **Linux / macOS**：loader 以 `RTLD_GLOBAL` 预加载原生库，模块可直接引用 loader 导出的符号
   （`lua_*` 与 `patchlib_*` 函数指针变量，签名同 `includes/tefkernel/patchlib/*.h`）。
-- **Windows**：链接 `sdk/windows_<arch>/libloader.windows.<arch>.dll.a`（仓库提供）后同样可直接 `extern`。
+- **Windows**：链接 `sdk/windows_<arch>/libloader.windows.<arch>.dll.a`（先通过 `bash build.sh win-x64 win-x86 --implib` 生成）后同样可直接 `extern`。
 - **Android 不可用**（符号作用域封闭），所以跨平台模块请统一用 3.1 的 API 表。
 
 ### 3.3 注意：有些名字是“宏”，不是符号
@@ -121,7 +121,7 @@ clang -O2 -fPIC -shared -o hello.so hello.c $INC
 $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang \
   -O2 -fPIC -shared -o hello.so hello.c $INC
 
-# Windows x64（PE 需 import lib，仓库 sdk/ 下提供）
+# Windows x64（PE 需 import lib，通过 build.sh --implib 生成到 sdk/）
 x86_64-w64-mingw32-gcc -O2 -shared -o hello.dll hello.c $INC \
   <LuaLoader>/sdk/windows_x64/libloader.windows.x64.dll.a
 ```

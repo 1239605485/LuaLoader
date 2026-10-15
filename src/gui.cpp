@@ -32,6 +32,13 @@
 
 #include "gui.hpp"
 #include "gui_images.hpp"
+#include "gui_viewport.hpp"
+#include <deque>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include "json.hpp"
+#include <cmath>
 #include "gui_icon_gesture.hpp"
 #include "gui_click_state.hpp"
 #include "gui_keyboard_bounds.hpp"
@@ -236,7 +243,7 @@ namespace lualoader::gui {
 
             Accessor a_screen_w, a_screen_h;
             Accessor a_mouse_x, a_mouse_y;
-            Accessor a_mouse_left, a_mouse_left_release, a_mouse_right;
+            Accessor a_mouse_left, a_mouse_left_release, a_mouse_right,a_scroll_wheel;
             Accessor a_show_splash;
 #if defined(__ANDROID__)
             patch_handle_t m_setup_rendering_ui{nullptr};
@@ -277,6 +284,7 @@ namespace lualoader::gui {
                 g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
                 g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");
                 g_gfx.a_mouse_left_release = resolve_accessor(g_gfx.t_main, "mouseLeftRelease");
+                if(auto input=patchlib_type_get_type("Terraria.GameInput","PlayerInput"))g_gfx.a_scroll_wheel=resolve_accessor(input,"ScrollWheelDelta");
                 g_gfx.a_mouse_right = resolve_accessor(g_gfx.t_main, "mouseRight");
                 g_gfx.a_show_splash = resolve_accessor(g_gfx.t_main, "showSplash");
             }
@@ -360,8 +368,12 @@ namespace lualoader::gui {
             float scale;
             int sx=0,sy=0,sw=0,sh=0,border=0;
             float edge=0;
+            Viewport clip;
         };
 
+        Viewport g_viewport;
+        bool g_scroll_drag=false;
+        bool text_in_clip(float x,float y,const char *text,float scale);
         std::vector<DrawCmd> g_cmds;
         bool g_recording = false;
         std::vector<std::string> g_image_release_queue;
@@ -382,6 +394,7 @@ namespace lualoader::gui {
 
         void exec_rect(const float x, const float y, const float w, const float h, const Color &c) {
             if (!g_gfx.m_draw_inv_bg || !g_sb || w <= 0 || h <= 0) return;
+            if(g_viewport.enabled){float cx=x,cy=y,cw=w,ch=h;if(g_viewport.crop(cx,cy,cw,ch))images::solid(g_sb,cx,cy,cw,ch,&c);return;}
             if(w<24.0f || h<24.0f){images::solid(g_sb,x,y,w,h,&c);return;}
             Recti r{static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h)};
             Color col = c;
@@ -394,10 +407,30 @@ namespace lualoader::gui {
 #endif
         }
 
+        struct CachedText {patch_handle_t value=nullptr;unsigned int pin=0;unsigned long long used=0;};
+        std::unordered_map<std::string,CachedText> g_text_cache;
+        unsigned long long g_text_clock=0;
+        void release_text(CachedText &entry){if(entry.pin)images::release_object(entry.pin);if(entry.value)patchlib_free(entry.value);entry={};}
+        void clear_text_cache(){for(auto &kv:g_text_cache)release_text(kv.second);g_text_cache.clear();g_text_clock=0;}
+        patch_handle_t cached_string(const char *text,bool &temporary){
+            temporary=false;auto it=g_text_cache.find(text);
+            if(it!=g_text_cache.end()){it->second.used=++g_text_clock;return it->second.value;}
+            auto value=patchlib_string_create(text);if(!value)return nullptr;
+            // Long dynamic content is not retained; fixed labels are bounded to 256 entries.
+            if(std::strlen(text)>512){temporary=true;return value;}
+            CachedText entry;entry.value=value;entry.used=++g_text_clock;
+#if defined(__ANDROID__)
+            entry.pin=images::retain_object(value);
+            if(!entry.pin){temporary=true;return value;}
+#endif
+            if(g_text_cache.size()>=256){auto old=g_text_cache.begin();for(auto i=g_text_cache.begin();i!=g_text_cache.end();++i)if(i->second.used<old->second.used)old=i;release_text(old->second);g_text_cache.erase(old);}
+            g_text_cache.emplace(text,entry);return value;
+        }
         void exec_string(const float x, const float y, const char *text, const Color &c, const float scale) {
             if (!g_gfx.m_draw_border_string || !g_sb || !text || !*text) return;
-            patch_handle_t str = patchlib_string_create(text);
+            bool temporary=false;patch_handle_t str=cached_string(text,temporary);
             if (!str) return;
+            struct TempStringGuard{patch_handle_t value;bool temporary;~TempStringGuard(){if(temporary)patchlib_free(value);}} string_guard{str,temporary};
             Vec2 pos{x, y};
             Color col = c;
 #if defined(__ANDROID__)
@@ -410,7 +443,7 @@ namespace lualoader::gui {
             void *args[8] = {&g_sb, &str, &pos, &col, &fscale, &ax, &ay, &max_chars};
             patchlib_method_invoke_args(g_gfx.m_draw_border_string, nullptr, nullptr, args);
 #endif
-            patchlib_free(str);
+
         }
 
         void sb_begin();
@@ -420,7 +453,9 @@ namespace lualoader::gui {
         /// PE's Unity compatibility renderer may regroup textures in deferred mode.
         void flush_cmds() {
             bool has_text=false;
+            const auto saved_clip=g_viewport;
             for (const DrawCmd &cmd: g_cmds) {
+                g_viewport=cmd.clip;images::set_clip(cmd.clip.enabled,cmd.clip.x,cmd.clip.y,cmd.clip.w,cmd.clip.h);
                 if (cmd.kind == DrawCmd::RECT) {
                     exec_rect(cmd.x, cmd.y, cmd.w, cmd.h, cmd.col);
                 } else if (cmd.kind == DrawCmd::IMAGE) {
@@ -431,17 +466,20 @@ namespace lualoader::gui {
             if(has_text){
                 sb_end();
                 sb_begin();
-                for(const DrawCmd &cmd:g_cmds)if(cmd.kind==DrawCmd::TEXT)
-                    exec_string(cmd.x,cmd.y,cmd.text.c_str(),cmd.col,cmd.scale);
+                for(const DrawCmd &cmd:g_cmds)if(cmd.kind==DrawCmd::TEXT){
+                    g_viewport=cmd.clip;
+                    if(text_in_clip(cmd.x,cmd.y,cmd.text.c_str(),cmd.scale))exec_string(cmd.x,cmd.y,cmd.text.c_str(),cmd.col,cmd.scale);
+                }
             }
-            g_cmds.clear();
+            g_cmds.clear();g_viewport=saved_clip;images::set_clip(false,0,0,0,0);
         }
 
         Color themed_color(const Color &c);
 
         void draw_rect(const float x, const float y, const float w, const float h, const Color &c) {
             if (g_recording) {
-                g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, themed_color(c), {}, 0.0f});
+                if(!g_viewport.intersects(x,y,w,h))return;
+                g_cmds.push_back(DrawCmd{DrawCmd::RECT, x, y, w, h, themed_color(c), {}, 0.0f});g_cmds.back().clip=g_viewport;
                 return;
             }
             exec_rect(x, y, w, h, themed_color(c));
@@ -451,7 +489,8 @@ namespace lualoader::gui {
                          const float scale = 1.0f) {
             if (!text || !*text) return;
             if (g_recording) {
-                g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, themed_color(c), text, scale});
+                if(!text_in_clip(x,y,text,scale))return;
+                g_cmds.push_back(DrawCmd{DrawCmd::TEXT, x, y, 0.0f, 0.0f, themed_color(c), text, scale});g_cmds.back().clip=g_viewport;
                 return;
             }
             exec_string(x, y, text, themed_color(c), scale);
@@ -459,9 +498,9 @@ namespace lualoader::gui {
 
         void draw_image(const std::string &id,float x,float y,float w,float h,const Color &color,
                         int sx=0,int sy=0,int sw=0,int sh=0,int border=0,float edge=0) {
-            if(id.empty() || w<=0 || h<=0)return;
+            if(id.empty() || w<=0 || h<=0||!g_viewport.intersects(x,y,w,h))return;
             if(g_recording){DrawCmd cmd{DrawCmd::IMAGE,x,y,w,h,color,id,0};
-                cmd.sx=sx;cmd.sy=sy;cmd.sw=sw;cmd.sh=sh;cmd.border=border;cmd.edge=edge;g_cmds.push_back(cmd);
+                cmd.sx=sx;cmd.sy=sy;cmd.sw=sw;cmd.sh=sh;cmd.border=border;cmd.edge=edge;cmd.clip=g_viewport;g_cmds.push_back(cmd);
             }else images::draw(g_sb,id,x,y,w,h,&color,sx,sy,sw,sh,border,edge);
         }
         void sb_begin() {
@@ -648,12 +687,14 @@ namespace lualoader::gui {
         }
 
         bool mouse_in(const float x, const float y, const float w, const float h) {
+            if(g_scroll_drag||!g_viewport.contains(g_mouse_x,g_mouse_y))return false;
             if (!g_render_owner.empty() && g_render_owner!=g_input_owner)return false;
             if (g_mouse_x == -FLT_MAX) return false;
             return g_mouse_x >= x && g_mouse_x <= x + w && g_mouse_y >= y && g_mouse_y <= y + h;
         }
 
         bool widget_click(const char *label,float x,float y,bool hover){
+            if(g_scroll_drag)return false;
             const std::string owner=g_render_owner.empty()?"keyboard":g_render_owner;
             const std::string id=owner+"#"+label+"@"+std::to_string(static_cast<int>(x))+","+std::to_string(static_cast<int>(y));
             return g_click_state.update(id,hover,g_mouse_pressed,g_mouse_released);
@@ -688,6 +729,9 @@ namespace lualoader::gui {
             return w * g_scale * scale;
         }
 
+        bool text_in_clip(float x,float y,const char *text,float scale){
+            return g_viewport.covers(x,y,text_width(text,scale),28.0f*g_scale*scale);
+        }
         // ====================================================================
         // 颜色表（Terraria 风格深色面板）
         // ====================================================================
@@ -800,6 +844,11 @@ namespace lualoader::gui {
             g_ctx->same_line = false;
         }
 
+        struct ScrollFrame {Ctx *parent=nullptr;Ctx child;Viewport old_clip;bool old_drag=false;ScrollMotion *motion=nullptr;Viewport bounds;float content_w=0,content_h=0;};
+        std::unordered_map<std::string,ScrollMotion> g_scrolls;
+        std::deque<ScrollFrame> g_scroll_stack;
+        std::string g_active_scroll;
+        int g_wheel_delta=0;bool g_wheel_used=false;
         // ====================================================================
         // 每个 Mod 的窗口状态
         // ====================================================================
@@ -818,10 +867,85 @@ namespace lualoader::gui {
             std::string compact_label; // opt-in: square collapsed launcher
             bool collapsed{false}; ///< 是否收起为标题栏
             int order{0};
+            bool initial_position=true;
         };
 
         std::unordered_map<std::string, WindowState> g_windows;
 
+        struct IconFolder {std::string id;float x=40,y=40;std::vector<std::string> members;IconGesture gesture;};
+        std::vector<IconFolder> g_folders;
+        std::string g_open_folder,g_merge_target,g_merge_source,g_layout_path;
+        std::unordered_map<std::string,IconGesture> g_member_gestures;
+        std::unordered_map<std::string,std::pair<float,float>> g_saved_positions;
+        std::unordered_map<std::string,bool> g_position_applied;
+        std::string g_member_drag;float g_member_press_time=0;
+        auto g_merge_since=std::chrono::steady_clock::now();
+        int g_folder_serial=0;bool g_folder_layout_dirty=false;
+        bool window_live(const std::string &id){for(const auto &kv:core::lua_mod_handles)if(kv.second&&kv.second->mod_id==id&&kv.second->gui_ref!=LUA_NOREF)return true;return false;}
+        std::vector<std::string> folder_members(const IconFolder &f){std::vector<std::string> v;for(auto &id:f.members){auto it=g_windows.find(id);if(window_live(id)&&it!=g_windows.end()&&it->second.visible)v.push_back(id);}return v;}
+        bool grouped_icon(const std::string &id){
+            auto it=g_windows.find(id);if(it==g_windows.end()||!it->second.collapsed)return false;
+            for(const auto &f:g_folders)if(folder_members(f).size()>=2&&std::find(f.members.begin(),f.members.end(),id)!=f.members.end())return true;
+            return false;
+        }
+        Viewport folder_icon(const IconFolder &f){float sz=48*g_scale;return {true,f.x,f.y,sz,sz};}
+        Viewport folder_panel(const IconFolder &f){
+            const float cell=64*g_scale,w=3*cell+16*g_scale,h=3*cell+40*g_scale;
+            return {true,std::clamp(f.x,0.0f,std::max(0.0f,g_screen_w-w)),std::clamp(f.y+52*g_scale,0.0f,std::max(0.0f,g_screen_h-h)),w,h};
+        }
+        std::unordered_map<std::string,int> g_folder_pages;
+        std::string folder_hit(float x,float y){for(auto it=g_folders.rbegin();it!=g_folders.rend();++it){if(folder_members(*it).size()<2)continue;
+            if(folder_icon(*it).contains(x,y)||(it->id==g_open_folder&&folder_panel(*it).contains(x,y)))return "#folder:"+it->id;}return {};}
+        auto g_layout_retry=std::chrono::steady_clock::time_point::min();
+        void save_layout(){
+            if(g_layout_path.empty()||!g_folder_layout_dirty||std::chrono::steady_clock::now()<g_layout_retry)return;
+            try{nlohmann::json j;j["version"]=1;j["folders"]=nlohmann::json::array();
+                for(const auto &f:g_folders)j["folders"].push_back({{"id",f.id},{"x",f.x},{"y",f.y},{"members",f.members}});
+                for(const auto &kv:g_windows){g_saved_positions[kv.first]={kv.second.x,kv.second.y};}
+                for(const auto &kv:g_saved_positions)j["positions"][kv.first]={kv.second.first,kv.second.second};
+                const auto tmp=g_layout_path+".tmp";std::ofstream out(tmp,std::ios::trunc);out<<j.dump(2);out.close();
+                if(!out)throw std::runtime_error("layout write failed");
+                std::error_code ec;std::filesystem::rename(tmp,g_layout_path,ec);
+                if(ec){
+                    const auto backup=g_layout_path+".bak";ec.clear();
+                    if(std::filesystem::exists(g_layout_path))std::filesystem::rename(g_layout_path,backup,ec);
+                    if(ec)throw std::runtime_error("cannot preserve old layout");
+                    std::filesystem::rename(tmp,g_layout_path,ec);
+                    if(ec){std::error_code restore;std::filesystem::rename(backup,g_layout_path,restore);throw std::runtime_error("cannot replace layout");}
+                    std::filesystem::remove(backup,ec);
+                }
+                g_folder_layout_dirty=false;
+            }catch(const std::exception &e){LOG_WARN("[gui-folder] save failed: {}",e.what());g_layout_retry=std::chrono::steady_clock::now()+std::chrono::seconds(5);}
+        }
+        void load_layout(const std::string &root){
+            g_layout_path=(std::filesystem::path(root)/"gui_layout.json").string();g_folders.clear();g_saved_positions.clear();g_position_applied.clear();g_folder_serial=0;
+            try{std::ifstream in(g_layout_path);if(!in)return;auto j=nlohmann::json::parse(in);if(j.value("version",0)!=1)return;
+                std::unordered_map<std::string,bool> seen;
+                if(j.contains("folders"))for(const auto &v:j["folders"]){if(g_folders.size()>=64)break;IconFolder f;f.id=std::to_string(++g_folder_serial);f.x=v.value("x",40.0f);f.y=v.value("y",40.0f);if(!std::isfinite(f.x)||!std::isfinite(f.y))continue;
+                    for(const auto &m:v.at("members")){auto id=m.get<std::string>();if(id.size()>256||seen[id]||f.members.size()>=64)continue;seen[id]=true;f.members.push_back(id);}
+                    if(f.members.size()>=2)g_folders.push_back(std::move(f));}
+                if(j.contains("positions"))for(auto it=j["positions"].begin();it!=j["positions"].end();++it){if(g_saved_positions.size()>=4096)break;
+                    float x=it.value().at(0).get<float>(),y=it.value().at(1).get<float>();if(std::isfinite(x)&&std::isfinite(y))g_saved_positions[it.key()]={x,y};}
+            }catch(const std::exception &e){LOG_WARN("[gui-folder] invalid layout: {}",e.what());g_folders.clear();}
+        }
+        void merge_icon(const std::string &source,const std::string &target){
+            if(source.empty()||source==target)return;
+            if(target.rfind("#folder:",0)==0){for(auto &f:g_folders)if("#folder:"+f.id==target&&f.members.size()<64){f.members.push_back(source);break;}}
+            else {if(g_folders.size()>=64)return;IconFolder f;f.id=std::to_string(++g_folder_serial);f.x=g_windows[target].x;f.y=g_windows[target].y;f.members={target,source};g_folders.push_back(std::move(f));}
+            g_merge_target.clear();g_merge_source.clear();g_folder_layout_dirty=true;
+        }
+        void track_merge(const std::string &source){
+            auto &ws=g_windows[source];std::string target;
+            const float size=ws.skin_icon.empty()?title_height():ws.icon_size;
+            const float cx=ws.x+size/2,cy=ws.y+size/2;
+            for(const auto &f:g_folders)if(folder_members(f).size()>=2&&folder_icon(f).contains(cx,cy)){target="#folder:"+f.id;break;}
+            if(target.empty())for(const auto &kv:g_windows){if(kv.first==source||!kv.second.collapsed||!kv.second.visible||grouped_icon(kv.first))continue;
+                const float size=kv.second.skin_icon.empty()?title_height():kv.second.icon_size;
+                Viewport box{true,kv.second.x,kv.second.y,size,size};if(box.contains(cx,cy)){target=kv.first;break;}}
+            if(source!=g_merge_source||target!=g_merge_target){g_merge_source=source;g_merge_target=target;g_merge_since=std::chrono::steady_clock::now();}
+            if(g_mouse_released&&!target.empty()&&std::chrono::steady_clock::now()-g_merge_since>=std::chrono::milliseconds(350))merge_icon(source,target);
+        }
+        void draw_folders();
         WindowState *g_style_window = nullptr;
         Color themed_color(const Color &c) {
             if (!g_style_window) return c;
@@ -848,10 +972,58 @@ namespace lualoader::gui {
         };
         EditState g_edit;
 
+        void draw_folders(){
+            g_viewport={};g_scroll_drag=false;g_style_window=nullptr;g_recording=true;
+            if(g_mouse_pressed&&folder_hit(g_mouse_x,g_mouse_y).empty()){
+                g_open_folder.clear();g_member_gestures.clear();g_member_drag.clear();
+            }
+            for(auto &f:g_folders){auto members=folder_members(f);if(members.size()<2)continue;
+                const float size=48*g_scale;f.x=std::clamp(f.x,0.0f,std::max(0.0f,g_screen_w-size));f.y=std::clamp(f.y,0.0f,std::max(0.0f,g_screen_h-size));
+                const std::string owner="#folder:"+f.id;g_render_owner=owner;
+                const bool hover=mouse_in(f.x,f.y,size,size);if(hover)g_hover_gui=true;
+                auto move=f.gesture.update(g_mouse_x,g_mouse_y,g_mouse_pressed&&hover,g_mouse_down,g_mouse_released,hover,f.x,f.y,6*g_scale);
+                if(move.move){f.x=std::clamp(move.x,0.0f,std::max(0.0f,g_screen_w-size));f.y=std::clamp(move.y,0.0f,std::max(0.0f,g_screen_h-size));if(g_mouse_released)g_folder_layout_dirty=true;}
+                if(move.tap)g_open_folder=g_open_folder==f.id?"":f.id;
+                draw_rect(f.x,f.y,size,size,kTitle);
+                for(size_t i=0;i<std::min(size_t(4),members.size());++i){auto &ws=g_windows[members[i]];float x=f.x+5*g_scale+(i%2)*20*g_scale,y=f.y+5*g_scale+(i/2)*20*g_scale;
+                    if(!ws.skin_icon.empty())draw_image(ws.skin_icon,x,y,18*g_scale,18*g_scale,kWhite);else draw_rect(x,y,18*g_scale,18*g_scale,kBtnHover);}
+                if(g_open_folder!=f.id)continue;
+                auto panel=folder_panel(f);draw_rect(panel.x,panel.y,panel.w,panel.h,kPanel);
+                int &page=g_folder_pages[f.id];const int pages=(int(members.size())+8)/9;page=std::clamp(page,0,pages-1);
+                const bool prev=mouse_in(panel.x,panel.y,40*g_scale,24*g_scale),next=mouse_in(panel.x+panel.w-40*g_scale,panel.y,40*g_scale,24*g_scale);
+                if(widget_click("folder-prev",panel.x,panel.y,prev))page=std::max(0,page-1);
+                if(widget_click("folder-next",panel.x+panel.w-40*g_scale,panel.y,next))page=std::min(pages-1,page+1);
+                draw_string(panel.x+8*g_scale,panel.y+2*g_scale,"<",kText,0.7f);
+                draw_string(panel.x+panel.w-25*g_scale,panel.y+2*g_scale,">",kText,0.7f);
+                for(int i=page*9;i<std::min(int(members.size()),page*9+9);++i){auto id=members[i];auto &ws=g_windows[id];int slot=i-page*9;
+                    float x=panel.x+8*g_scale+(slot%3)*64*g_scale,y=panel.y+28*g_scale+(slot/3)*64*g_scale;
+                    bool hit=mouse_in(x,y,56*g_scale,56*g_scale);if(hit)g_hover_gui=true;
+                    auto &gesture=g_member_gestures[id];
+                    auto r=gesture.update(g_mouse_x,g_mouse_y,g_mouse_pressed&&hit,g_mouse_down,g_mouse_released,hit,x,y,8*g_scale);
+                    if(r.move){g_member_drag=id;draw_rect(r.x,r.y,48*g_scale,48*g_scale,kBtnHover);
+                        if(g_mouse_released&&!panel.contains(g_mouse_x,g_mouse_y)){
+                            ws.x=std::clamp(r.x,0.0f,std::max(0.0f,g_screen_w-ws.icon_size));ws.y=std::clamp(r.y,0.0f,std::max(0.0f,g_screen_h-ws.icon_size));ws.collapsed=true;
+                            f.members.erase(std::remove(f.members.begin(),f.members.end(),id),f.members.end());g_open_folder.clear();g_folder_layout_dirty=true;
+                        }}
+                    if(r.tap){ws.collapsed=false;ws.order=++g_next_window_order;g_open_folder.clear();}
+                    if(!ws.skin_icon.empty())draw_image(ws.skin_icon,x+8*g_scale,y,40*g_scale,40*g_scale,kWhite);else draw_rect(x+8*g_scale,y,40*g_scale,40*g_scale,kBtn);
+                    std::string label=ws.title.empty()?id:ws.title;
+                    if(label.size()>24){size_t n=0;while(n<label.size()){size_t next=n+utf8_next(label.c_str()+n);if(next>24)break;n=next;}label.resize(n);}
+                    draw_string(x,y+42*g_scale,label.c_str(),kText,0.42f);
+                }
+            }
+            g_render_owner.clear();
+            if(!g_mouse_down)g_member_drag.clear();
+            for(auto it=g_folders.begin();it!=g_folders.end();)if(it->members.size()<2)it=g_folders.erase(it);else ++it;
+            if(g_mouse_released){g_merge_target.clear();g_merge_source.clear();}
+            if(!g_mouse_down)save_layout();
+            g_recording=false;flush_cmds();
+        }
         void draw_virtual_keyboard();
 
         bool point_in_gui(const float x, const float y) {
             if (x == -FLT_MAX || y == -FLT_MAX) return false;
+            if(!folder_hit(x,y).empty())return true;
             if (g_edit.active) {
                 const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : 0.0f;
                 const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : 0.0f;
@@ -859,8 +1031,8 @@ namespace lualoader::gui {
             }
             for (const auto &kv: g_windows) {
                 const WindowState &ws = kv.second;
-                if (!ws.visible) continue;
-                const bool compact = ws.collapsed && !ws.compact_label.empty();
+                if (!ws.visible||grouped_icon(kv.first)) continue;
+                const bool compact = ws.collapsed;
                 const float hit_w = compact ? (ws.skin_icon.empty()?title_height():ws.icon_size) : ws.w;
                 const float body_h = compact ? hit_w : ws.collapsed ? title_height() : ws.h;
                 if (x >= ws.x && x <= ws.x + hit_w && y >= ws.y && y <= ws.y + body_h) return true;
@@ -872,6 +1044,7 @@ namespace lualoader::gui {
         // 绘制单个 Mod 的窗口
         // ====================================================================
 
+        void end_scroll();
         void draw_mod_gui(lua_mod_handle_t *h) {
             if (!h || h->gui_ref == LUA_NOREF) return;
 
@@ -892,7 +1065,7 @@ namespace lualoader::gui {
                 return;
             }
 
-            if (ws.collapsed && !ws.compact_label.empty()) {
+            if (ws.collapsed) {
                 const float size = ws.skin_icon.empty()?title_height():ws.icon_size;
                 const bool hit=mouse_in(ws.x,ws.y,size,size);
                 const bool can_press=g_drag_id.empty() || g_drag_id==h->mod_id;
@@ -911,7 +1084,9 @@ namespace lualoader::gui {
                 if(!custom_icon)draw_rect(ws.x, ws.y, size, size, hovered ? kBtnHover : kTitle);
                 if(!custom_icon)draw_string(ws.x + (size - text_width(ws.compact_label.c_str())) * 0.5f,
                             ws.y + (size - line_height()) * 0.5f,
-                            ws.compact_label.c_str(), kWhite, 1.0f);
+                            ws.compact_label.empty()?"M":ws.compact_label.c_str(), kWhite, 1.0f);
+                if(gesture.move){track_merge(h->mod_id);if(g_mouse_released)g_folder_layout_dirty=true;}
+                if(!g_merge_target.empty()&&g_merge_source==h->mod_id)draw_string(ws.x,ws.y-20*g_scale,"+",kWhite,0.7f);
                 if (gesture.tap) ws.collapsed = false;
                 return;
             }
@@ -960,6 +1135,8 @@ namespace lualoader::gui {
                 ws.y = g_mouse_y - g_drag_dy;
             }
 
+            if(g_mouse_released&&g_drag_id==h->mod_id)g_folder_layout_dirty=true;
+
             // 收起：只画标题栏，不回调/不绘制内容
             if (ws.collapsed) {
                 ws.h = th;
@@ -977,9 +1154,12 @@ namespace lualoader::gui {
             g_cmds.clear();
             g_recording = true;
             lua_engine::call_on_gui(h);
+            while(!g_scroll_stack.empty())end_scroll();
+            ws.initial_position=false;
             g_recording = false;
             g_current_mod.clear();
             g_ctx = nullptr;
+            g_viewport={};
             if(ws.visible && !ws.collapsed)flush_cmds();else g_cmds.clear();
 
             const float content_h = ctx.cy + ctx.prev_h;
@@ -1120,6 +1300,64 @@ namespace lualoader::gui {
         // Lua GUI 函数
         // ====================================================================
 
+        int l_gui_begin_scroll(lua_State *L){
+            const char *id=luaL_checkstring(L,1);
+            float x=luaL_checknumber(L,2),y=luaL_checknumber(L,3),w=luaL_checknumber(L,4),h=luaL_checknumber(L,5);
+            float cw=luaL_checknumber(L,6),ch=luaL_checknumber(L,7);
+            if(!g_ctx||g_scroll_stack.size()>=8||!std::isfinite(x)||!std::isfinite(y)||!std::isfinite(w)||!std::isfinite(h)||!std::isfinite(cw)||!std::isfinite(ch)||w<=0||h<=0||cw<0||ch<0)return luaL_error(L,"invalid scroll viewport");
+            const std::string key=g_current_mod+"#"+id;
+            if(!g_scrolls.count(key)&&g_scrolls.size()>=4096)return luaL_error(L,"scroll ID limit exceeded");
+            auto &m=g_scrolls[key];
+            Viewport bounds{true,g_ctx->ox+x,g_ctx->oy+y,w,h};
+            float mx=std::max(0.0f,cw-w),my=std::max(0.0f,ch-h);m.clamp(mx,my);
+            bool hit=mouse_in(bounds.x,bounds.y,w,h);
+            if(hit)g_hover_gui=true;
+            if(hit&&g_mouse_pressed&&!g_active_scroll.empty()&&!g_scroll_stack.empty()){
+                auto old=g_scrolls.find(g_active_scroll);
+                if(old!=g_scrolls.end()&&!old->second.bar_x&&!old->second.bar_y){old->second.active=false;g_active_scroll.clear();}
+            }
+            if(hit&&g_mouse_pressed&&g_active_scroll.empty()){
+                g_active_scroll=key;m.begin(g_mouse_x,g_mouse_y,mx>0&&g_mouse_y>=bounds.y+h-12*g_scale,my>0&&g_mouse_x>=bounds.x+w-12*g_scale);
+                if(m.bar_x||m.bar_y)g_click_state.armed=key+"#bar";
+            }
+            if(g_active_scroll==key){
+                if(g_mouse_down||g_mouse_released)m.move(g_mouse_x,g_mouse_y,mx,my,
+                    w-std::min(w,std::max(16*g_scale,cw>0?w*w/cw:w)),
+                    h-std::min(h,std::max(16*g_scale,ch>0?h*h/ch:h)),6*g_scale);
+                if(m.dragged){g_scroll_drag=true;g_click_state.armed=key+"#scroll";}
+                if(!g_mouse_down){m.active=false;g_active_scroll.clear();}
+            }
+            if(hit&&!g_wheel_used&&g_wheel_delta){
+                if(my>0)m.y-=g_wheel_delta*0.5f;else m.x-=g_wheel_delta*0.5f;
+                m.clamp(mx,my);g_wheel_used=true;
+            }
+            ScrollFrame f;f.parent=g_ctx;f.old_clip=g_viewport;f.old_drag=g_scroll_drag;f.motion=&m;f.bounds=bounds;f.content_w=cw;f.content_h=ch;
+            f.child.ox=bounds.x-m.x;f.child.oy=bounds.y-m.y;f.child.cw=cw;
+            g_scroll_stack.push_back(f);g_ctx=&g_scroll_stack.back().child;
+            g_viewport=bounds;if(f.old_clip.enabled){float px=bounds.x,py=bounds.y,pw=w,ph=h;f.old_clip.crop(px,py,pw,ph);g_viewport={true,px,py,std::max(0.0f,pw),std::max(0.0f,ph)};}
+            lua_pushnumber(L,m.x);lua_pushnumber(L,m.y);lua_pushnumber(L,w);lua_pushnumber(L,h);return 4;
+        }
+        void end_scroll(){
+            if(g_scroll_stack.empty())return;auto f=g_scroll_stack.back();g_scroll_stack.pop_back();g_ctx=f.parent;g_viewport=f.old_clip;
+            float track=std::max(3.0f,5*g_scale);auto &m=*f.motion;
+            if(f.content_h>f.bounds.h){float thumb=std::max(16*g_scale,f.bounds.h*f.bounds.h/f.content_h);thumb=std::min(thumb,f.bounds.h);
+                float y=f.bounds.y+(f.bounds.h-thumb)*m.y/(f.content_h-f.bounds.h);
+                draw_rect(f.bounds.x+f.bounds.w-track,y,track,thumb,kBorder);}
+            if(f.content_w>f.bounds.w){float thumb=std::max(16*g_scale,f.bounds.w*f.bounds.w/f.content_w);thumb=std::min(thumb,f.bounds.w);
+                float x=f.bounds.x+(f.bounds.w-thumb)*m.x/(f.content_w-f.bounds.w);
+                draw_rect(x,f.bounds.y+f.bounds.h-track,thumb,track,kBorder);}
+            // Keep click cancellation for the release frame, including siblings.
+        }
+        int l_gui_end_scroll(lua_State *){end_scroll();return 0;}
+        int l_gui_scroll_to(lua_State *L){
+            const char *id=luaL_checkstring(L,1);float x=luaL_checknumber(L,2),y=luaL_checknumber(L,3);
+            if(!std::isfinite(x)||!std::isfinite(y))return luaL_error(L,"invalid scroll offset");
+            const std::string key=g_current_mod+"#"+id;
+            if(!g_scrolls.count(key)&&g_scrolls.size()>=4096)return luaL_error(L,"scroll ID limit exceeded");
+            auto &m=g_scrolls[key];m.x=std::max(0.0f,x);m.y=std::max(0.0f,y);return 0;
+        }
+        int l_gui_image_cache_stats(lua_State *L){size_t used,limit,entries;uint64_t evictions;images::stats(used,limit,entries,evictions);lua_pushinteger(L,used);lua_pushinteger(L,limit);lua_pushinteger(L,entries);lua_pushinteger(L,evictions);return 4;}
+        Color lua_color(lua_State *L,int index);
         int l_gui_text(lua_State *L) {
             const char *s = luaL_checkstring(L, 1);
             if (!g_ctx) return 0;
@@ -1127,12 +1365,14 @@ namespace lualoader::gui {
             const float w = text_width(s);
             const float h = line_height();
             place(x, y, w, h);
-            draw_string(x, y, s, kText, 1.0f);
+            Color color=lua_isnoneornil(L,2)?themed_color(kText):lua_color(L,2);
+            draw_string(x, y, s, color, 1.0f);
             return 0;
         }
 
         int l_gui_text_wrapped(lua_State *L) {
             const char *s = luaL_checkstring(L, 1);
+            Color color=lua_isnoneornil(L,2)?themed_color(kText):lua_color(L,2);
             if (!g_ctx) return 0;
             // 按内容宽度粗略换行
             const float max_w = g_ctx->cw;
@@ -1146,7 +1386,7 @@ namespace lualoader::gui {
                 const std::string ch(p, n);
                 const float cw = text_width(ch.c_str());
                 if (line_w + cw > max_w && !line.empty()) {
-                    draw_string(cur_x, cur_y, line.c_str(), kText, 1.0f);
+                    draw_string(cur_x, cur_y, line.c_str(), color, 1.0f);
                     cur_y += line_height();
                     cur_x = x;
                     line_w = 0.0f;
@@ -1156,7 +1396,7 @@ namespace lualoader::gui {
                 line_w += cw;
                 p += n;
             }
-            if (!line.empty()) draw_string(cur_x, cur_y, line.c_str(), kText, 1.0f);
+            if (!line.empty()) draw_string(cur_x, cur_y, line.c_str(), color, 1.0f);
             g_ctx->prev_h = (cur_y - y) + line_height();
             return 0;
         }
@@ -1204,7 +1444,7 @@ namespace lualoader::gui {
             draw_rect(x, y, w, h, kTrackEdge);                                   // 按钮边框
             draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1,
                       hovered ? (g_mouse_down ? kBtnActive : kBtnHover) : kBtn);
-            draw_string(x + 12.0f * g_scale, y + (h - line_height()) * 0.5f, label, kWhite, 1.0f);
+            draw_string(x + 12.0f * g_scale, y + (h - line_height()) * 0.5f, label, kText, 1.0f);
             lua_pushboolean(L, clicked);
             return 1;
         }
@@ -1306,7 +1546,7 @@ namespace lualoader::gui {
             draw_rect(x + g1, y + g1, (w - 2 * g1) * ratio, h - 2 * g1, kFill);
             char ptxt[16];
             std::snprintf(ptxt, sizeof(ptxt), "%d%%", static_cast<int>(ratio * 100.0f + 0.5f));
-            draw_string(x + (w - text_width(ptxt)) * 0.5f, y + (h - line_height()) * 0.5f, ptxt, kWhite, 1.0f);
+            draw_string(x + (w - text_width(ptxt)) * 0.5f, y + (h - line_height()) * 0.5f, ptxt, kText, 1.0f);
             return 0;
         }
 
@@ -1330,7 +1570,7 @@ namespace lualoader::gui {
             draw_rect(x, y, w, h, kTrackEdge);
             draw_rect(x + g1, y + g1, w - 2 * g1, h - 2 * g1, hovered ? kBtnHover : kBtn);
             const std::string text = (open ? "v " : "> ") + std::string(label);
-            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, text.c_str(), kWhite, 1.0f);
+            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, text.c_str(), kText, 1.0f);
             lua_pushboolean(L, open);
             return 1;
         }
@@ -1360,7 +1600,7 @@ namespace lualoader::gui {
 
             const std::string shown = editing ? (g_edit.buf + "|") : std::string(value[0] ? value : "(tap to edit)");
             draw_rect(x, y, w, h, editing ? kBtnActive : (hovered ? kBtnHover : kBtn));
-            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kWhite, 1.0f);
+            draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kText, 1.0f);
 
             lua_pushstring(L, editing ? g_edit.buf.c_str() : value);
             return 1;
@@ -1379,8 +1619,10 @@ namespace lualoader::gui {
             const float x = static_cast<float>(luaL_checknumber(L, 1));
             const float y = static_cast<float>(luaL_checknumber(L, 2));
             if (WindowState *ws = current_window()) {
-                ws->x = x;
-                ws->y = y;
+                if(!std::isfinite(x)||!std::isfinite(y))return luaL_error(L,"invalid window position");
+                auto saved=g_saved_positions.find(g_current_mod);
+                if(ws->initial_position&&saved!=g_saved_positions.end()){ws->x=saved->second.first;ws->y=saved->second.second;}
+                else{ws->x=x;ws->y=y;}
             }
             return 0;
         }
@@ -1464,12 +1706,14 @@ namespace lualoader::gui {
 
         Color lua_color(lua_State *L, int index) {
             luaL_checktype(L, index, LUA_TTABLE);
+            index=lua_absindex(L,index);const char *names[]={"r","g","b","a"};
             int values[4] = {255, 255, 255, 255};
             for (int i = 0; i < 4; ++i) {
                 lua_rawgeti(L, index, i + 1);
+                if(lua_isnil(L,-1)){lua_pop(L,1);lua_getfield(L,index,names[i]);}
                 if (!lua_isnil(L, -1)) {
-                    const int v = static_cast<int>(luaL_checkinteger(L, -1));
-                    values[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+                    const lua_Integer v = luaL_checkinteger(L, -1);
+                    values[i] = v < 0 ? 0 : v > 255 ? 255 : static_cast<int>(v);
                 }
                 lua_pop(L, 1);
             }
@@ -1601,6 +1845,10 @@ namespace lualoader::gui {
         }
 
         const luaL_Reg gui_funcs[] = {
+                {"begin_scroll", l_gui_begin_scroll},
+                {"end_scroll", l_gui_end_scroll},
+                {"scroll_to", l_gui_scroll_to},
+                {"image_cache_stats", l_gui_image_cache_stats},
                 {"load_image", l_gui_load_image},
                 {"image_status", l_gui_image_status},
                 {"release_image", l_gui_release_image},
@@ -1781,7 +2029,7 @@ namespace lualoader::gui {
                     break;
                 }
             }
-            if (!any_gui) {images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};
+            if (!any_gui) {clear_text_cache();images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};g_scrolls.clear();g_active_scroll.clear();
                 g_pointer_owner.clear();g_input_owner.clear();g_drag_id.clear();g_slider_active.clear();g_click_state.reset();g_render_owner.clear();g_mouse_down=g_prev_mouse_down=false;
 #if defined(__ANDROID__)
                 g_active_cursor_valid=false;g_captured_touches.clear();
@@ -1814,15 +2062,19 @@ namespace lualoader::gui {
             images::prune(owners);
             auto owner_alive=[&owners](const std::string &key){for(const auto &id:owners)if(key.rfind(id+"#",0)==0)return true;return false;};
             if(g_edit.active && !owner_alive(g_edit.owner))g_edit=EditState{};
+            for(auto it=g_scrolls.begin();it!=g_scrolls.end();)if(!owner_alive(it->first))it=g_scrolls.erase(it);else ++it;
+            if(!g_active_scroll.empty()&&!owner_alive(g_active_scroll))g_active_scroll.clear();
             for(auto it=g_headers.begin();it!=g_headers.end();){if(!owner_alive(it->first))it=g_headers.erase(it);else ++it;}
+            for(auto it=g_member_gestures.begin();it!=g_member_gestures.end();)if(!window_live(it->first))it=g_member_gestures.erase(it);else ++it;
             for(auto it=g_windows.begin();it!=g_windows.end();){
                 bool live=false;for(const auto &id:owners)if(id==it->first){live=true;break;}
-                if(!live)it=g_windows.erase(it);else ++it;
+                if(!live){g_position_applied.erase(it->first);it=g_windows.erase(it);}else ++it;
             }
             for(const auto &id:g_image_release_queue)images::release(id);
             g_image_release_queue.clear();
             update_screen_size();
             update_input();
+            images::begin_frame();g_scroll_drag=false;g_viewport={};g_wheel_delta=read_int(g_gfx.a_scroll_wheel,0);g_wheel_used=false;
             g_hover_gui = false;
 
             patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
@@ -1834,22 +2086,25 @@ namespace lualoader::gui {
             std::vector<lua_mod_handle_t*> windows;
             for(auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF){
                 auto &ws=g_windows[kv.second->mod_id];if(ws.order==0)ws.order=++g_next_window_order;
-                const float access=ws.collapsed&&!ws.skin_icon.empty()?ws.icon_size:title_height();
+                const float access=ws.collapsed?(ws.skin_icon.empty()?title_height():ws.icon_size):title_height();
                 ws.x=std::max(0.0f,std::min(ws.x,std::max(0.0f,g_screen_w-access)));
                 ws.y=std::max(0.0f,std::min(ws.y,std::max(0.0f,g_screen_h-access)));
                 windows.push_back(kv.second);
             }
-            if(!g_pointer_owner.empty() && g_pointer_owner!="#keyboard"){
+            if(!g_pointer_owner.empty() && g_pointer_owner!="#keyboard"&&g_pointer_owner.rfind("#folder:",0)!=0){
                 auto it=g_windows.find(g_pointer_owner);
                 if(it==g_windows.end() || !it->second.visible)g_pointer_owner.clear();
             }
+            for(auto *h:windows){if(!g_position_applied[h->mod_id]){auto pos=g_saved_positions.find(h->mod_id);if(pos!=g_saved_positions.end()){g_windows[h->mod_id].x=pos->second.first;g_windows[h->mod_id].y=pos->second.second;}g_position_applied[h->mod_id]=true;}}
             g_input_owner=g_pointer_owner;
+            if(g_input_owner.empty())g_input_owner=folder_hit(g_mouse_x,g_mouse_y);
+            if(g_mouse_pressed&&g_input_owner.rfind("#folder:",0)==0)g_pointer_owner=g_input_owner;
             if(g_input_owner=="#keyboard" && !g_edit.active)g_input_owner.clear();
             if(g_edit.active && keyboard_contains(g_mouse_x,g_mouse_y,g_scale,g_screen_w,g_screen_h))g_input_owner="#keyboard";
             if(g_input_owner.empty()){
                 int top=-1;
-                for(auto *h:windows){const auto &ws=g_windows[h->mod_id];if(!ws.visible)continue;
-                    const bool compact=ws.collapsed&&!ws.compact_label.empty();
+                for(auto *h:windows){const auto &ws=g_windows[h->mod_id];if(!ws.visible||grouped_icon(h->mod_id))continue;
+                    const bool compact=ws.collapsed;
                     const float w=compact?(ws.skin_icon.empty()?title_height():ws.icon_size):ws.w;
                     const float height=compact?w:ws.collapsed?title_height():ws.h;
                     if(g_mouse_x>=ws.x&&g_mouse_x<=ws.x+w&&g_mouse_y>=ws.y&&g_mouse_y<=ws.y+height&&ws.order>=top){top=ws.order;g_input_owner=h->mod_id;}
@@ -1859,7 +2114,8 @@ namespace lualoader::gui {
                 }
             }
             std::sort(windows.begin(),windows.end(),[](auto *a,auto *b){return g_windows[a->mod_id].order<g_windows[b->mod_id].order;});
-            for(auto *h:windows){draw_mod_gui(h);g_render_owner.clear();}
+            for(auto *h:windows){if(!grouped_icon(h->mod_id))draw_mod_gui(h);g_render_owner.clear();}
+            draw_folders();
             if(!g_mouse_down){g_drag_id.clear();g_slider_active.clear();g_pointer_owner.clear();}
 
 #if defined(__ANDROID__)
@@ -1870,6 +2126,7 @@ namespace lualoader::gui {
             if (g_edit.active){
                 g_cmds.clear();g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
             }
+            if(!g_mouse_down)g_active_scroll.clear();
             g_click_state.finish(g_mouse_down,g_mouse_released);
 
             sb_end();
@@ -1888,7 +2145,7 @@ namespace lualoader::gui {
 
         void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
             if (g_in_render) return;
-            struct RenderGuard{~RenderGuard(){g_in_render=false;g_recording=false;g_ctx=nullptr;g_sb=nullptr;g_style_window=nullptr;g_current_mod.clear();g_render_owner.clear();g_cmds.clear();}} guard;
+            struct RenderGuard{~RenderGuard(){g_in_render=false;g_recording=false;g_ctx=nullptr;g_sb=nullptr;g_style_window=nullptr;g_current_mod.clear();g_render_owner.clear();g_cmds.clear();g_scroll_stack.clear();g_viewport={};g_scroll_drag=false;}} guard;
             g_in_render = true;
             try{render();}catch(...){
                 LOG_ERROR("[gui] render exception; resetting frame state");
@@ -1898,6 +2155,8 @@ namespace lualoader::gui {
         }
 
     } // namespace
+
+    void configure_storage(const std::string &root){load_layout(root);}
 
     bool installed() { return g_installed; }
 
@@ -1970,9 +2229,11 @@ namespace lualoader::gui {
         g_layer_hook=g_cursor_list_hook=PATCH_HOOK_INVALID_ID;
         g_captured_touches.clear();
 #endif
-        images::clear();
+        clear_text_cache();images::clear();
         g_image_release_queue.clear();
+        g_scrolls.clear();g_scroll_stack.clear();g_active_scroll.clear();g_viewport={};
         g_style_window=nullptr;g_ctx=nullptr;g_sb=nullptr;g_recording=false;g_in_render=false;
+        save_layout();g_folders.clear();g_open_folder.clear();g_member_gestures.clear();g_position_applied.clear();
         g_windows.clear();g_headers.clear();g_edit=EditState{};g_cmds.clear();g_next_window_order=0;
         g_render_owner.clear();g_input_owner.clear();g_pointer_owner.clear();g_current_mod.clear();
         g_drag_id.clear();g_slider_active.clear();g_click_state.reset();

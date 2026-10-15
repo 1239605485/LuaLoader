@@ -1,9 +1,0 @@
-{
-  "type": "Mod",
-  "file": "luamod.json",
-  "parentLoader": "lzup333.lualoader",
-  "resources": "Resources",
-  "modloader": {"type": "null"},
-  "plugins": {"type": "null"},
-  "tefkernel": {"minVersion": "1.0.0"}
-}
