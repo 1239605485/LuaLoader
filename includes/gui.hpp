@@ -24,6 +24,7 @@
 namespace lualoader::gui {
 
     /// 是否已成功安装（成功 hook 了渲染后端）
+    void configure_storage(const std::string &private_dir);
     bool installed();
 
     /// 安装 GUI：hook 游戏主循环（Main.Draw / Main.Update），每帧用游戏自带的

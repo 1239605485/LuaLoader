@@ -460,6 +460,9 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
 
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
     if (ml_entry && ml_entry->private_dir) {
+#ifdef LUALOADER_GUI
+        gui::configure_storage(ml_entry->private_dir);
+#endif
         // 推导 mods 根目录： private_dir = <workdir>/modloader/private/<pkgid>
         {
             const std::filesystem::path p(ml_entry->private_dir);
@@ -521,8 +524,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            18,
-            "1.8.0",
+            30,
+            "1.9.0",
             1,
             0,
             nullptr,

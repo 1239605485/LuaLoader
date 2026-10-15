@@ -7,6 +7,8 @@ LuaLoader 是 TEFKernel 的一个 ModLoader：内核负责注入和底层 hook�
 
 > 作者：lzup333
 
+📖 **GUI 文档**：[`doc/gui.md`](doc/gui.md)（含滚动容器、图标文件夹和图片缓存）。
+
 📖 **API 文档**：[`doc/api.md`](doc/api.md) —— 极简教学，从最小 Mod 到完整 `mod.patch` 用法。
 
 ## 它做什么
@@ -58,6 +60,8 @@ export ANDROID_NDK_HOME=~/Android/Sdk/ndk/28.0.13004108/
 export TEFKERNEL_LIB=./libtefkernel.linux.x86_64.so 
 ./build.sh -r --package
 ```
+
+GitHub Actions 支持推送、PR 和手动构建六个目标架构。上传源码时，让 `CMakeLists.txt`、`build.sh` 和 `.github` 位于仓库根目录。
 
 ## 写一个 Mod
 
