@@ -15,6 +15,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
 
     steps:
       - name: Checkout
@@ -42,7 +44,24 @@ jobs:
       - name: Install mingw-w64
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 gcc-multilib g++-multilib
+          sudo apt-get install -y mingw-w64 gcc-multilib g++-multilib clang zip unzip
+
+      - name: Select MinGW POSIX compilers
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/lualoader-compilers"
+          for arch in x86_64 i686; do
+            for compiler in gcc g++; do
+              ln -sf "$(command -v ${arch}-w64-mingw32-${compiler}-posix)" "$RUNNER_TEMP/lualoader-compilers/${arch}-w64-mingw32-${compiler}"
+            done
+          done
+          echo "$RUNNER_TEMP/lualoader-compilers" >> "$GITHUB_PATH"
+
+      - name: Read version
+        id: metadata
+        shell: bash
+        run: |
+          python3 -c 'import json; print("version=" + json.load(open("Info.json"))["version"])' >> "$GITHUB_OUTPUT"
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -90,4 +109,4 @@ jobs:
         with:
           files: dist/*.zip
           generate_release_notes: true
-          tag_name: ${{ github.ref_name }}   # 手动触发时用分支名/tag 名作为 tag
+          tag_name: v${{ needs.build.outputs.version }}

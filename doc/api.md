@@ -560,3 +560,8 @@ todo_list = { "setup" }
 ## 相关文档
 
 - 原生模块（C/C++ 扩展）：[`native.md`](native.md)
+
+
+## 滚动容器、文件夹与资源预算
+
+当前滚动接口与适配说明见 [gui-scroll-folders.md](gui-scroll-folders.md)。
