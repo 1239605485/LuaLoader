@@ -564,4 +564,4 @@ todo_list = { "setup" }
 
 ## 滚动容器、文件夹与资源预算
 
-当前滚动接口与适配说明见 [gui-scroll-folders.md](gui-scroll-folders.md)。
+滚动容器、图标文件夹及图片缓存接口见 [gui.md](gui.md)。

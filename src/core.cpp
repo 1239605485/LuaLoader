@@ -524,7 +524,7 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            19,
+            30,
             "1.9.0",
             1,
             0,
