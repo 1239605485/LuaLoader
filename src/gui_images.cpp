@@ -18,10 +18,7 @@
 #include <dlfcn.h>
 #include "xdl.h"
 #endif
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_PNG
-#define STBI_NO_STDIO
-#include "vendor/stb_image.h"
+#include "image_decode.hpp"
 namespace lualoader::gui::images {
 void destroy_texture(void *t);
 namespace {
@@ -130,26 +127,22 @@ bool load(Entry &e){
     e.error="Unity texture upload interface unavailable";return false;
  }
 #endif
- unsigned char *pixels=nullptr;
+  std::vector<unsigned char> pixbuf;
  if(e.path=="@builtin-white"){
-    e.w=e.h=1;pixels=static_cast<unsigned char*>(STBI_MALLOC(4));
-    if(!pixels){e.error="white texture allocation failed";return false;}
-    std::memset(pixels,255,4);
+  e.w=e.h=1;pixbuf.assign(4,255);
  }else {
  std::ifstream file(e.path,std::ios::binary|std::ios::ate);
  if(!file){e.error="PNG file missing";return false;}
  const auto size=file.tellg();if(size<=0 || size>16*1024*1024){e.error="PNG size limit";return false;}
  std::vector<unsigned char> bytes(static_cast<size_t>(size));file.seekg(0);file.read(reinterpret_cast<char*>(bytes.data()),bytes.size());
- int channels=0;
- if(!stbi_info_from_memory(bytes.data(),bytes.size(),&e.w,&e.h,&channels) || e.w<1 || e.h<1 || e.w>2048 || e.h>2048){e.error="invalid PNG or over 2048 pixels";return false;}
+ if(!image::decode_png(bytes.data(),bytes.size(),pixbuf,e.w,e.h) || e.w<1 || e.h<1 || e.w>2048 || e.h>2048){e.error="invalid PNG or over 2048 pixels";return false;}
  size_t need=static_cast<size_t>(e.w)*e.h*4;
 #if !defined(__ANDROID__)
  need*=2; // Base GPU texture and retained CPU RGBA.
 #endif
  if(!make_room(need,&e)){e.attempted=false;return false;}
- pixels=stbi_load_from_memory(bytes.data(),bytes.size(),&e.w,&e.h,&channels,4);
- if(!pixels){e.error="PNG decode failed";return false;}
  }
+ unsigned char *pixels=pixbuf.data();
  const size_t count=static_cast<size_t>(e.w)*e.h*4;
  // XNA AlphaBlend expects premultiplied alpha.
  for(size_t i=0;i<count;i+=4){for(int j=0;j<3;++j)pixels[i+j]=static_cast<unsigned char>((pixels[i+j]*pixels[i+3]+127)/255);}
@@ -163,7 +156,6 @@ bool load(Entry &e){
 #endif
  try { e.tex=terraria_texture2d_create(e.w,e.h,TEXTURE_FORMAT_RGBA32,pixels,count); }
  catch(...){e.error="texture upload exception";}
- stbi_image_free(pixels);
  if(!e.tex){if(e.error.empty())e.error="texture upload failed";return false;}
 #if defined(__ANDROID__)
  e.pin=pin(e.tex,false);if(!e.pin){destroy_texture(e.tex);e.tex=nullptr;e.error="texture GC retention failed";return false;}

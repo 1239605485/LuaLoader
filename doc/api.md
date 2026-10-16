@@ -25,6 +25,7 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [调用方法](#调用方法)
   - [Hook](#hook)
   - [句柄与生命周期](#句柄与生命周期)
+- [`mod.item`：注册自定义物品](#moditem注册自定义物品)
 - [调试与热重载](#调试与热重载)
 - [常见陷阱](#常见陷阱)
 - [完整示例](#完整示例)
@@ -487,6 +488,69 @@ mod.patch.install_hook(method, { postfix = on_ai, copy = true })
 ```
 
 托管副本只是同一对象的另一个句柄，读写字段仍然作用于原对象；Lua GC 在不再引用时自动释放。
+
+---
+
+## `mod.item`：注册自定义物品
+
+在游戏初始化前注册新物品（从 `mod.init` 或入口脚本顶层的 `todo_list` 里调用）。
+一个 Mod 可注册多件；`name` 在同一个 Mod 内需唯一。
+
+```lua
+mod.item.register{
+    name      = "test_sword",          -- 内部名（必填，同 Mod 内唯一）
+    texture   = "sword.png",           -- PNG，见下方“贴图”
+    tooltip   = true,                  -- 是否显示物品简介
+    sacrifice = 1,                     -- 研究所需数量（0 = 不可研究）
+    defaults  = {                      -- Item 字段默认值（表或 function(item)）
+        damage = 25, useTime = 20, useStyle = 1, autoReuse = true,
+        width = 40, height = 40, melee = true, rare = 2, maxStack = 1,
+        knockBack = 5.0,
+    },
+    can_use   = function(player, item, ignore_cursed) return true end,
+    language  = {
+        en = { name = "Test Sword", tooltip = "A test sword." },
+        zh = { name = "测试之剑",   tooltip = "一把用于测试的剑。" },
+    },
+    recipe    = { result = 1, materials = { { id = 9, count = 10 } }, station = 18 },
+}
+```
+
+返回分配到的 `runtime_id`（即物品 type id）；注册失败返回 `nil`。
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | string | **必填**。内部名，与 Mod id 一起构成存档键与本地化键 |
+| `texture` | string | PNG 相对路径，见下 |
+| `tooltip` | bool | 是否显示简介（默认 `false`） |
+| `sacrifice` | int | 研究所需数量，`0` 表示不可研究 |
+| `defaults` | table / function | `Item` 字段默认值。表形式按字段名写入；函数形式为 `function(item) end`（`item` 是 **非托管** 句柄，勿释放） |
+| `can_use` | function | 可选。`function(player, item, ignore_cursed) -> bool`，返回 `false` 时不可使用 |
+| `language` | table | `{ <语言> = { name = ..., tooltip = ... } }`。语言键可用 `en`/`zh`/`ja`… 或游戏文化名；也接受数字（见内核 `language_culture_t`） |
+| `recipe` | table | `{ result = 数量, materials = { { id = , count = }, ... }, station = 物块ID }`；`station = -1` 表示无需合成站 |
+
+语言键：`en`、`de`、`it`、`fr`、`es`、`ru`、`zh`(简体)、`pt`、`pl`、`ja`、`ko`、`zh-tw`(繁体)。
+
+### 贴图
+
+PNG 放在 Mod 的 `Resources/` 下，两处都可（就近优先）：
+
+```
+my_mod/Resources/Image/sword.png      # 与 lib/ 同级，推荐
+my_mod/Resources/lib/Image/sword.png  # 与入口脚本同级也行
+```
+
+`texture = "sword.png"` 会依次找 `lib/Image/`、`lib/`、`Image/`、`Resources/Image/`。
+PNG 会被解码为 RGBA32（Android 下自动做 Y 轴翻转）。不放贴图则使用内核默认贴图。
+
+### 说明
+
+- 必须在**游戏分配物品 ID 之前**注册（即 `mod.init` 阶段），否则拿不到 `runtime_id`。
+- `defaults` 里的字段名需与 `Terraria.Item` 字段同名；值类型不匹配会打日志并忽略。
+- 物品贴图与本地化在加载时预生成，`language`/`can_use` 等回调会在游戏线程被调用。
+- 卸载 Mod（`/reload` 或退出）时会自动注销其注册的物品。
 
 ---
 

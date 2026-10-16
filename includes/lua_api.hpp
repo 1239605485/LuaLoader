@@ -44,4 +44,7 @@ namespace lualoader::lua_api {
     /// 卸载 handle 上安装的所有钩子并释放槽位
     void uninstall_all_hooks(lua_mod_handle_t *handle);
 
+    /// 注销 handle 注册的所有自定义物品并释放回调引用
+    void unregister_items(lua_mod_handle_t *handle);
+
 } // namespace lualoader::lua_api

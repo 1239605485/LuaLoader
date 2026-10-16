@@ -513,6 +513,7 @@ namespace lualoader::lua_engine {
     void close(lua_mod_handle_t *handle) {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
+        lua_api::unregister_items(handle);
         if (handle->L) {
             lua_close(handle->L);
             handle->L = nullptr;
