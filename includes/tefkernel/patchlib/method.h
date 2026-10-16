@@ -146,6 +146,8 @@ typedef struct patch_method_signature_t {
     tefstd_vector_t arg_types; ///< patch_type_t，参数类型
     tefstd_vector_t arg_names; ///< const char*, 参数名称
     int token;              ///< Token
+    tefstd_vector_t arg_type_handles; ///< patch_handle_t, parallel to arg_types
+    patch_handle_t return_type_handle; ///< managed return type handle
 } patch_method_signature_t;
 
 /**

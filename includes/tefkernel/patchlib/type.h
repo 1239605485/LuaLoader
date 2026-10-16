@@ -60,7 +60,8 @@ typedef enum {
     PATCH_DOUBLE,
     PATCH_POINTER,
     PATCH_OBJECT,
-    PATCH_CHAR
+    PATCH_CHAR,
+    PATCH_STRUCT
 } patch_type_t;
 
 #define PATCH_TYPE_TO_NATIVE(type) \
