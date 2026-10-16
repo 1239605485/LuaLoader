@@ -456,6 +456,7 @@ namespace lualoader::lua_engine {
             LOG_ERROR("Failed to run Lua mod {}: {}", handle->mod_id, err);
             // 入口若已装上钩子，先卸载再关状态机，避免槽位残留/悬垂引用
             lua_api::uninstall_all_hooks(handle);
+            lua_api::unregister_all_items(handle);
             lua_close(L);
             handle->L = nullptr;
             return false;
@@ -513,6 +514,7 @@ namespace lualoader::lua_engine {
     void close(lua_mod_handle_t *handle) {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
+        lua_api::unregister_all_items(handle);
         if (handle->L) {
             lua_close(handle->L);
             handle->L = nullptr;

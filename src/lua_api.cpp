@@ -20,6 +20,17 @@
 #include "lua_api.hpp"
 
 #include <cstdint>
+#include <climits>
+#include <memory>
+#include <mutex>
+#include "json.hpp"
+#define STBI_NO_STDIO
+#include "vendor/stb_image.h"
+#include "tefkernel/terraria/item_manager.h"
+#include "tefkernel/terraria/language_manager.h"
+#include "tefkernel/terraria/recipe_manager.h"
+#include "tefkernel/terraria/texture2d.h"
+#include "tefkernel/terraria/asset.h"
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -2083,6 +2094,364 @@ namespace lualoader::lua_api {
         return 0;
     }
 
+    struct ItemBinding {
+        terraria_item_handle_t item{};
+        lua_mod_handle_t *owner{};
+        std::string mod_id, name, display_name, tooltip, texture_path;
+        int refs[5]{LUA_NOREF, LUA_NOREF, LUA_NOREF, LUA_NOREF, LUA_NOREF};
+        patch_handle_t texture{};
+        int recipe_stack{0}, station{-1};
+        struct Material { int id, stack; std::string name; };
+        std::vector<Material> materials;
+    };
+    static std::vector<std::unique_ptr<ItemBinding>> item_bindings;
+    static std::mutex item_text_mutex;
+    static std::string item_text_json = "{}";
+    static bool item_callbacks_registered = false;
+    static const char *item_callback_names[] = {
+            "early_init", "init_static", "set_defaults", "can_use", "get_texture"};
+
+    static bool items_available() {
+        return terraria_item_manager_get_api_version &&
+               terraria_item_manager_get_api_version() >= 1 &&
+               terraria_item_manager_register_item && terraria_item_manager_unregister_item &&
+               terraria_language_manager_register_callback &&
+               terraria_recipe_manager_register_callback;
+    }
+
+    static ItemBinding *find_item(lua_mod_handle_t *owner, const char *name) {
+        for (auto &b : item_bindings)
+            if (b->owner == owner && b->name == name) return b.get();
+        return nullptr;
+    }
+
+    static ItemBinding *binding_for(terraria_item_handle_t *item) {
+        for (auto &b : item_bindings)
+            if (&b->item == item) return b.get();
+        return nullptr;
+    }
+
+    static void rebuild_item_text() {
+        nlohmann::json text = nlohmann::json::object();
+        for (const auto &b : item_bindings) {
+            if (!b->owner) continue;
+            const std::string suffix = "lzup333.lualoader_" + b->mod_id;
+            text["item_name_" + suffix][b->name] = b->display_name;
+            if (!b->tooltip.empty()) text["item_tooltip_" + suffix][b->name] = b->tooltip;
+        }
+        std::lock_guard<std::mutex> lock(item_text_mutex);
+        item_text_json = text.dump();
+    }
+
+    static const char *item_language_callback(language_culture_t) {
+        thread_local std::string snapshot;
+        std::lock_guard<std::mutex> lock(item_text_mutex);
+        snapshot = item_text_json;
+        return snapshot.c_str();
+    }
+
+    static void item_recipe_callback() {
+        if (!terraria_recipe_set_result || !terraria_recipe_set_material ||
+            !terraria_recipe_set_station || !terraria_recipe_add) return;
+        for (auto &b : item_bindings) {
+            if (!b->owner || b->recipe_stack <= 0 || b->item.runtime_id < 0) continue;
+            std::vector<int> mats;
+            bool valid = true;
+            for (auto &m : b->materials) {
+                ItemBinding *custom = m.name.empty() ? nullptr : find_item(b->owner, m.name.c_str());
+                int id = m.name.empty() ? m.id : (custom ? custom->item.runtime_id : -1);
+                if (id <= 0) { valid = false; break; }
+                mats.push_back(id);
+                mats.push_back(m.stack);
+            }
+            if (!valid) {
+                LOG_ERROR("[mod {}] unresolved recipe material for {}", b->mod_id, b->name);
+                continue;
+            }
+            terraria_recipe_set_result(b->item.runtime_id, b->recipe_stack);
+            terraria_recipe_set_material(mats.data(), static_cast<int>(mats.size() / 2));
+            terraria_recipe_set_station(b->station);
+            terraria_recipe_add();
+        }
+    }
+
+    static bool begin_item_call(ItemBinding *b, int slot, int &top) {
+        if (!b || !b->owner || !b->owner->L || b->refs[slot] == LUA_NOREF) return false;
+        lua_State *L = b->owner->L;
+        top = lua_gettop(L);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, b->refs[slot]);
+        return true;
+    }
+
+    static bool finish_item_call(ItemBinding *b, int slot, int top, int nargs, int results) {
+        lua_State *L = b->owner->L;
+        if (lua_pcall(L, nargs, results, 0) == LUA_OK) return true;
+        LOG_ERROR("[mod {}] item {}.{}: {}", b->mod_id, b->name,
+                  item_callback_names[slot], lua_tostring(L, -1) ? lua_tostring(L, -1) : "Lua error");
+        lua_settop(L, top);
+        // A failing callback is disabled until reload to avoid per-frame log spam.
+        luaL_unref(L, LUA_REGISTRYINDEX, b->refs[slot]);
+        b->refs[slot] = LUA_NOREF;
+        return false;
+    }
+
+    static void item_init_callback(terraria_item_handle_t *item, int slot) {
+        auto *b = binding_for(item);
+        int top;
+        if (!begin_item_call(b, slot, top)) return;
+        lua_State *L = b->owner->L;
+        lua_pushinteger(L, item->runtime_id);
+        finish_item_call(b, slot, top, 1, 0);
+        lua_settop(L, top);
+    }
+    static void item_early_init(terraria_item_handle_t *item) { item_init_callback(item, 0); }
+    static void item_init_static(terraria_item_handle_t *item) { item_init_callback(item, 1); }
+    static void item_set_defaults(terraria_item_handle_t *item, patch_handle_t instance) {
+        auto *b = binding_for(item);
+        int top;
+        if (!begin_item_call(b, 2, top)) return;
+        lua_State *L = b->owner->L;
+        push_owned_handle(L, copy_handle(instance));
+        lua_pushinteger(L, item->runtime_id);
+        finish_item_call(b, 2, top, 2, 0);
+        lua_settop(L, top);
+    }
+    static bool item_can_use(terraria_item_handle_t *item, patch_handle_t player,
+                             patch_handle_t instance, bool ignore_cursed) {
+        auto *b = binding_for(item);
+        int top;
+        if (!begin_item_call(b, 3, top)) return true;
+        lua_State *L = b->owner->L;
+        push_owned_handle(L, copy_handle(player));
+        push_owned_handle(L, copy_handle(instance));
+        lua_pushboolean(L, ignore_cursed);
+        lua_pushinteger(L, item->runtime_id);
+        bool allowed = false;
+        if (finish_item_call(b, 3, top, 4, 1)) allowed = lua_toboolean(L, -1);
+        lua_settop(L, top);
+        return allowed;
+    }
+
+    static patch_handle_t item_get_texture(terraria_item_handle_t *item) {
+        auto *b = binding_for(item);
+        if (!b || !b->owner) return nullptr;
+        if (b->texture) return copy_handle(b->texture);
+        int top;
+        if (begin_item_call(b, 4, top)) {
+            lua_State *L = b->owner->L;
+            lua_pushinteger(L, item->runtime_id);
+            if (finish_item_call(b, 4, top, 1, 1)) {
+                patch_handle_t h = to_handle(L, -1);
+                if (h) b->texture = copy_handle(h);
+            }
+            lua_settop(L, top);
+        } else if (!b->texture_path.empty() && terraria_texture2d_create &&
+                   terraria_texture2d_get_class && terraria_asset_create) {
+            std::ifstream input(b->texture_path, std::ios::binary | std::ios::ate);
+            const auto size = input ? input.tellg() : std::streampos(-1);
+            if (size <= 0 || size > 16 * 1024 * 1024) return nullptr;
+            std::vector<unsigned char> data(static_cast<size_t>(size));
+            input.seekg(0);
+            if (!input.read(reinterpret_cast<char *>(data.data()), data.size())) return nullptr;
+            int w, h, channels;
+            if (!stbi_info_from_memory(data.data(), static_cast<int>(data.size()), &w, &h, &channels) ||
+                w <= 0 || h <= 0 || w > 2048 || h > 2048) return nullptr;
+            auto *pixels = stbi_load_from_memory(data.data(), static_cast<int>(data.size()), &w, &h, &channels, 4);
+            if (!pixels) return nullptr;
+#if defined(__ANDROID__)
+            for (int y = 0; y < h / 2; ++y)
+                for (int x = 0; x < w * 4; ++x)
+                    std::swap(pixels[y * w * 4 + x], pixels[(h - 1 - y) * w * 4 + x]);
+#endif
+            patch_handle_t texture = terraria_texture2d_create(w, h, TEXTURE_FORMAT_RGBA32,
+                                                               pixels, static_cast<size_t>(w) * h * 4);
+            stbi_image_free(pixels);
+            if (texture) {
+                patch_handle_t type = terraria_texture2d_get_class();
+                b->texture = terraria_asset_create(type, texture);
+                patchlib_free(type);
+                patchlib_free(texture);
+            }
+            if (!b->texture) LOG_ERROR("[mod {}] cannot load item texture {}", b->mod_id, b->name);
+        }
+        return b->texture ? copy_handle(b->texture) : nullptr;
+    }
+
+    static void release_item_binding(ItemBinding &b) {
+        if (b.owner && b.owner->L) {
+            for (int &ref : b.refs) {
+                luaL_unref(b.owner->L, LUA_REGISTRYINDEX, ref);
+                ref = LUA_NOREF;
+            }
+        }
+        if (b.texture) patchlib_free(b.texture);
+        b.texture = nullptr;
+    }
+
+    void unregister_all_items(lua_mod_handle_t *owner) {
+        for (auto it = item_bindings.begin(); it != item_bindings.end();) {
+            auto &b = **it;
+            if (b.owner != owner) { ++it; continue; }
+            const bool detached = terraria_item_manager_unregister_item &&
+                                  terraria_item_manager_unregister_item(&b.item);
+            release_item_binding(b);
+            if (detached) it = item_bindings.erase(it);
+            else {
+                // Allocation failure in kernel: keep the native handle alive, but detach Lua.
+                b.owner = nullptr;
+                ++it;
+            }
+        }
+        rebuild_item_text();
+    }
+
+    static int l_items_available(lua_State *L) {
+        lua_pushboolean(L, items_available());
+        return 1;
+    }
+    static int l_items_get_id(lua_State *L) {
+        const char *name = luaL_checkstring(L, 1);
+        auto *b = find_item(get_handle(L), name);
+        if (!b || b->item.runtime_id < 0) lua_pushnil(L);
+        else lua_pushinteger(L, b->item.runtime_id);
+        return 1;
+    }
+    static int l_items_unregister(lua_State *L) {
+        auto *b = find_item(get_handle(L), luaL_checkstring(L, 1));
+        if (!b) { lua_pushboolean(L, false); return 1; }
+        // Registration/unregistration during item callbacks would invalidate their context.
+        if (b->item.runtime_id >= 0) return luaL_error(L, "unregister items by unloading the mod after initialization");
+        if (!terraria_item_manager_unregister_item(&b->item)) return luaL_error(L, "kernel could not unregister item");
+        release_item_binding(*b);
+        for (auto it = item_bindings.begin(); it != item_bindings.end(); ++it)
+            if (it->get() == b) { item_bindings.erase(it); break; }
+        rebuild_item_text();
+        lua_pushboolean(L, true);
+        return 1;
+    }
+
+    static int l_items_register(lua_State *L) {
+        if (!items_available()) return luaL_error(L, "custom items require the matching TEFKernel item API v1 build");
+        luaL_checktype(L, 1, LUA_TTABLE);
+        auto *owner = get_handle(L);
+        lua_getfield(L, 1, "internal_name");
+        const char *name = luaL_checkstring(L, -1);
+        if (!*name || strspn(name, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != strlen(name))
+            return luaL_error(L, "internal_name must contain only letters, digits or underscores");
+        if (find_item(owner, name)) return luaL_error(L, "item already registered: %s", name);
+        // Validate before allocating C++ state: Lua errors use longjmp.
+        for (auto key : {"display_name", "tooltip", "texture"}) {
+            lua_getfield(L, 1, key);
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TSTRING)
+                return luaL_error(L, "%s must be a string", key);
+            lua_pop(L, 1);
+        }
+        for (const char *key : item_callback_names) {
+            lua_getfield(L, 1, key);
+            if (!lua_isnil(L, -1) && !lua_isfunction(L, -1))
+                return luaL_error(L, "%s must be a function", key);
+            lua_pop(L, 1);
+        }
+        lua_getfield(L, 1, "sacrifice_count");
+        const lua_Integer sacrifice = luaL_optinteger(L, -1, 0);
+        if (sacrifice < 0 || sacrifice > 9999) return luaL_error(L, "invalid sacrifice_count");
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "recipe");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            for (auto key : {"stack", "station"}) {
+                lua_getfield(L, -1, key);
+                const auto value = luaL_optinteger(L, -1, strcmp(key, "stack") == 0 ? 1 : -1);
+                if (value < (strcmp(key, "stack") == 0 ? 1 : -1) || value > INT_MAX)
+                    return luaL_error(L, "invalid recipe %s", key);
+                lua_pop(L, 1);
+            }
+            lua_getfield(L, -1, "materials");
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const size_t count = lua_rawlen(L, -1);
+            if (count < 1 || count > 15) return luaL_error(L, "recipe needs 1 to 15 materials");
+            for (size_t i = 1; i <= count; ++i) {
+                lua_rawgeti(L, -1, i);
+                luaL_checktype(L, -1, LUA_TTABLE);
+                lua_rawgeti(L, -1, 1);
+                if (lua_type(L, -1) != LUA_TSTRING && (!lua_isinteger(L, -1) || lua_tointeger(L, -1) <= 0 || lua_tointeger(L, -1) > INT_MAX))
+                    return luaL_error(L, "material ID must be positive or an internal_name string");
+                lua_pop(L, 1);
+                lua_rawgeti(L, -1, 2);
+                const auto stack = luaL_checkinteger(L, -1);
+                if (stack < 1 || stack > 9999) return luaL_error(L, "invalid material stack");
+                lua_pop(L, 2);
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+
+        auto b = std::make_unique<ItemBinding>();
+        b->owner = owner;
+        b->mod_id = owner->info.pkg_id;
+        b->name = name;
+        auto read_string = [&](const char *key) {
+            lua_getfield(L, 1, key);
+            std::string value = lua_isnil(L, -1) ? "" : lua_tostring(L, -1);
+            lua_pop(L, 1);
+            return value;
+        };
+        b->display_name = read_string("display_name");
+        if (b->display_name.empty()) b->display_name = b->name;
+        b->tooltip = read_string("tooltip");
+        b->texture_path = read_string("texture");
+        if (!b->texture_path.empty()) {
+            const std::filesystem::path path(b->texture_path);
+            // Texture paths are resolved relative to the same directory as the Lua entry.
+            b->texture_path = (path.is_absolute() ? path : std::filesystem::path(owner->mod_dir) / path).string();
+        }
+        for (int i = 0; i < 5; ++i) {
+            lua_getfield(L, 1, item_callback_names[i]);
+            if (lua_isnil(L, -1)) lua_pop(L, 1);
+            else b->refs[i] = luaL_ref(L, LUA_REGISTRYINDEX);
+        }
+        lua_getfield(L, 1, "recipe");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "stack"); b->recipe_stack = static_cast<int>(lua_tointeger(L, -1)); lua_pop(L, 1);
+            if (!b->recipe_stack) b->recipe_stack = 1;
+            lua_getfield(L, -1, "station"); b->station = lua_isnil(L, -1) ? -1 : static_cast<int>(lua_tointeger(L, -1)); lua_pop(L, 1);
+            lua_getfield(L, -1, "materials");
+            for (size_t i = 1; i <= lua_rawlen(L, -1); ++i) {
+                lua_rawgeti(L, -1, i);
+                lua_rawgeti(L, -1, 1);
+                ItemBinding::Material m{};
+                if (lua_type(L, -1) == LUA_TSTRING) m.name = lua_tostring(L, -1);
+                else m.id = static_cast<int>(lua_tointeger(L, -1));
+                lua_pop(L, 1);
+                lua_rawgeti(L, -1, 2); m.stack = static_cast<int>(lua_tointeger(L, -1)); lua_pop(L, 2);
+                b->materials.push_back(std::move(m));
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        b->item.parent_modloader_id = "lzup333.lualoader";
+        b->item.parent_id = b->mod_id.c_str();
+        b->item.internal_name = b->name.c_str();
+        b->item.runtime_id = -1;
+        b->item.has_tooltip = !b->tooltip.empty();
+        b->item.sacrifice_count = static_cast<int>(sacrifice);
+        b->item.item_ops = {item_early_init, item_init_static, item_set_defaults, item_can_use, item_get_texture};
+        if (!terraria_item_manager_register_item(&b->item)) {
+            release_item_binding(*b);
+            b.reset();
+            return luaL_error(L, "kernel rejected item; register new items before Main.Initialize");
+        }
+        item_bindings.push_back(std::move(b));
+        if (!item_callbacks_registered) {
+            terraria_language_manager_register_callback(item_language_callback);
+            terraria_recipe_manager_register_callback(item_recipe_callback);
+            item_callbacks_registered = true;
+        }
+        rebuild_item_text();
+        lua_pushstring(L, name);
+        return 1;
+    }
+
     static const luaL_Reg mod_patch_functions[] = {
             {"get_type", l_patch_get_type},
             {"get_basic_type", l_patch_get_basic_type},
@@ -2202,6 +2571,14 @@ namespace lualoader::lua_api {
         lua_setfield(L, -2, "arch");
         lua_pushstring(L, handle->info.version.c_str());
         lua_setfield(L, -2, "version");
+
+        lua_newtable(L);
+        static const luaL_Reg item_functions[] = {
+            {"available", l_items_available}, {"register", l_items_register},
+            {"get_id", l_items_get_id}, {"unregister", l_items_unregister}, {nullptr, nullptr}
+        };
+        luaL_setfuncs(L, item_functions, 0);
+        lua_setfield(L, -2, "items");
 
         lua_pushcfunction(L, l_mod_log);
         lua_setfield(L, -2, "log");
