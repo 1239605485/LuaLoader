@@ -27,6 +27,7 @@ set(LUALOADER_SOURCES
         src/logger.cpp
         src/lua_engine.cpp
         src/lua_api.cpp
+        src/system_keyboard.cpp
         src/mod_api.cpp
         src/gui.cpp
         src/gui_images.cpp
@@ -129,7 +130,7 @@ endif()
 option(LUALOADER_BUILD_GUI_TESTS "Build host-only GUI state tests" OFF)
 if(LUALOADER_BUILD_GUI_TESTS AND NOT ANDROID)
     enable_testing()
-    add_executable(gui_model_test tests/gui_model_test.cpp src/gui_images.cpp includes/tefkernel/tef_api_imp.c)
+    add_executable(gui_model_test tests/gui_model_test.cpp src/gui_images.cpp src/system_keyboard.cpp includes/tefkernel/tef_api_imp.c)
     add_executable(image_cache_test tests/image_cache_test.cpp includes/tefkernel/tef_api_imp.c)
     foreach(t gui_model_test image_cache_test)
         target_include_directories(${t} PRIVATE includes lib/lua-5.4.8/src)
@@ -148,4 +149,15 @@ if(LUALOADER_BUILD_ITEM_TESTS AND NOT ANDROID)
     target_link_libraries(item_api_test PRIVATE LuaLoader)
     target_compile_options(item_api_test PRIVATE -UNDEBUG)
     add_test(NAME item_api_test COMMAND item_api_test)
+endif()
+
+option(LUALOADER_BUILD_KEYBOARD_TESTS "Build host-only system keyboard tests" OFF)
+if(LUALOADER_BUILD_KEYBOARD_TESTS AND NOT ANDROID)
+    enable_testing()
+    add_executable(system_keyboard_test tests/system_keyboard_test.cpp src/system_keyboard.cpp includes/tefkernel/tef_api_imp.c)
+    target_include_directories(system_keyboard_test PRIVATE includes lib/lua-5.4.8/src)
+    target_link_libraries(system_keyboard_test PRIVATE lua)
+    target_compile_definitions(system_keyboard_test PRIVATE LUALOADER_KEYBOARD_TEST=1)
+    target_compile_options(system_keyboard_test PRIVATE -UNDEBUG)
+    add_test(NAME system_keyboard_test COMMAND system_keyboard_test)
 endif()

@@ -41,6 +41,7 @@ extern "C" {
 }
 
 #include "logger.hpp"
+#include "system_keyboard.hpp"
 #include "platform.hpp"
 
 namespace lualoader::lua_engine {
@@ -457,6 +458,7 @@ namespace lualoader::lua_engine {
             // 入口若已装上钩子，先卸载再关状态机，避免槽位残留/悬垂引用
             lua_api::uninstall_all_hooks(handle);
             lua_api::unregister_all_items(handle);
+            text_input::release_mod(handle->mod_id);
             lua_close(L);
             handle->L = nullptr;
             return false;
@@ -515,6 +517,7 @@ namespace lualoader::lua_engine {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
         lua_api::unregister_all_items(handle);
+        text_input::release_mod(handle->mod_id);
         if (handle->L) {
             lua_close(handle->L);
             handle->L = nullptr;

@@ -29,6 +29,7 @@
 
 #include "json.hpp"
 #include "logger.hpp"
+#include "system_keyboard.hpp"
 #include "lua_engine.hpp"
 #include "platform.hpp"
 #ifdef LUALOADER_GUI
@@ -504,6 +505,7 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
         delete entry.second;
     }
     lua_mod_handles.clear();
+    text_input::shutdown();
 
     for (auto &entry: lua_mod_multiplayer_infos) {
         free(const_cast<char *>(entry.second->mod_id));
@@ -524,8 +526,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            33,
-            "1.10.2",
+            34,
+            "1.11.0",
             1,
             0,
             nullptr,

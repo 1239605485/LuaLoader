@@ -42,6 +42,7 @@
 #include "gui_icon_gesture.hpp"
 #include "gui_click_state.hpp"
 #include "gui_keyboard_bounds.hpp"
+#include "system_keyboard.hpp"
 
 #include <cctype>
 #include <algorithm>
@@ -969,6 +970,7 @@ namespace lualoader::gui {
             std::string owner;
             std::string buf;
             bool shift{false};
+            bool system{false};
         };
         EditState g_edit;
 
@@ -1024,7 +1026,7 @@ namespace lualoader::gui {
         bool point_in_gui(const float x, const float y) {
             if (x == -FLT_MAX || y == -FLT_MAX) return false;
             if(!folder_hit(x,y).empty())return true;
-            if (g_edit.active) {
+            if (g_edit.active && !g_edit.system) {
                 const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : 0.0f;
                 const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : 0.0f;
                 if (keyboard_contains(x, y, g_scale, sw, sh)) return true;
@@ -1583,7 +1585,17 @@ namespace lualoader::gui {
                 return 1;
             }
             const std::string id = g_current_mod + "#" + label;
-            const bool editing = g_edit.active && g_edit.owner == id;
+            bool editing = g_edit.active && g_edit.owner == id;
+            bool completed = false;
+            if (editing && g_edit.system) {
+                auto result = text_input::read(id);
+                g_edit.buf = result.text;
+                if (result.status != "visible") {
+                    g_edit.active = false;
+                    completed = true;
+                    if (!result.error.empty()) LOG_WARN("[gui] native input: {}", result.error);
+                }
+            }
 
             float x, y;
             const float w = g_ctx->cw;
@@ -1593,16 +1605,28 @@ namespace lualoader::gui {
             if (hovered) g_hover_gui = true;
             if (hovered && g_mouse_pressed) {
                 if(g_click_state.armed.empty())g_click_state.armed=g_render_owner+"#input-focus";
+                if (g_edit.active && g_edit.system) text_input::close(g_edit.owner, true);
                 g_edit.active = true;
                 g_edit.owner = id;
                 g_edit.buf = value;
+                g_edit.system = false;
+#if defined(__ANDROID__)
+                std::string error;
+                text_input::Options options;
+                options.text = value;
+                options.placeholder = label;
+                g_edit.system = text_input::open(id, options, error);
+                if (!g_edit.system) LOG_WARN("[gui] native input: {}", error);
+#endif
+                editing = true;
+                completed = false;
             }
 
             const std::string shown = editing ? (g_edit.buf + "|") : std::string(value[0] ? value : "(tap to edit)");
             draw_rect(x, y, w, h, editing ? kBtnActive : (hovered ? kBtnHover : kBtn));
             draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kText, 1.0f);
 
-            lua_pushstring(L, editing ? g_edit.buf.c_str() : value);
+            lua_pushstring(L, (editing || completed) ? g_edit.buf.c_str() : value);
             return 1;
         }
 
@@ -2029,7 +2053,7 @@ namespace lualoader::gui {
                     break;
                 }
             }
-            if (!any_gui) {clear_text_cache();images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};g_scrolls.clear();g_active_scroll.clear();
+            if (!any_gui) {if(g_edit.system)text_input::close(g_edit.owner,false);clear_text_cache();images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};g_scrolls.clear();g_active_scroll.clear();
                 g_pointer_owner.clear();g_input_owner.clear();g_drag_id.clear();g_slider_active.clear();g_click_state.reset();g_render_owner.clear();g_mouse_down=g_prev_mouse_down=false;
 #if defined(__ANDROID__)
                 g_active_cursor_valid=false;g_captured_touches.clear();
@@ -2061,7 +2085,7 @@ namespace lualoader::gui {
             for(const auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF)owners.push_back(kv.second->mod_id);
             images::prune(owners);
             auto owner_alive=[&owners](const std::string &key){for(const auto &id:owners)if(key.rfind(id+"#",0)==0)return true;return false;};
-            if(g_edit.active && !owner_alive(g_edit.owner))g_edit=EditState{};
+            if(g_edit.active && !owner_alive(g_edit.owner)){if(g_edit.system)text_input::close(g_edit.owner,false);g_edit=EditState{};}
             for(auto it=g_scrolls.begin();it!=g_scrolls.end();)if(!owner_alive(it->first))it=g_scrolls.erase(it);else ++it;
             if(!g_active_scroll.empty()&&!owner_alive(g_active_scroll))g_active_scroll.clear();
             for(auto it=g_headers.begin();it!=g_headers.end();){if(!owner_alive(it->first))it=g_headers.erase(it);else ++it;}
@@ -2100,7 +2124,7 @@ namespace lualoader::gui {
             if(g_input_owner.empty())g_input_owner=folder_hit(g_mouse_x,g_mouse_y);
             if(g_mouse_pressed&&g_input_owner.rfind("#folder:",0)==0)g_pointer_owner=g_input_owner;
             if(g_input_owner=="#keyboard" && !g_edit.active)g_input_owner.clear();
-            if(g_edit.active && keyboard_contains(g_mouse_x,g_mouse_y,g_scale,g_screen_w,g_screen_h))g_input_owner="#keyboard";
+            if(g_edit.active && !g_edit.system && keyboard_contains(g_mouse_x,g_mouse_y,g_scale,g_screen_w,g_screen_h))g_input_owner="#keyboard";
             if(g_input_owner.empty()){
                 int top=-1;
                 for(auto *h:windows){const auto &ws=g_windows[h->mod_id];if(!ws.visible||grouped_icon(h->mod_id))continue;
@@ -2123,7 +2147,7 @@ namespace lualoader::gui {
 #endif
 
             g_style_window=nullptr;
-            if (g_edit.active){
+            if (g_edit.active && !g_edit.system){
                 g_cmds.clear();g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
             }
             if(!g_mouse_down)g_active_scroll.clear();
@@ -2229,6 +2253,7 @@ namespace lualoader::gui {
         g_layer_hook=g_cursor_list_hook=PATCH_HOOK_INVALID_ID;
         g_captured_touches.clear();
 #endif
+        if(g_edit.system)text_input::close(g_edit.owner,false);
         clear_text_cache();images::clear();
         g_image_release_queue.clear();
         g_scrolls.clear();g_scroll_stack.clear();g_active_scroll.clear();g_viewport={};

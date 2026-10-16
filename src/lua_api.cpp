@@ -18,6 +18,7 @@
  *******************************************************************************/
 
 #include "lua_api.hpp"
+#include "system_keyboard.hpp"
 
 #include <cstdint>
 #include <climits>
@@ -2601,6 +2602,8 @@ namespace lualoader::lua_api {
         lua_setfield(L, -2, "write_file");
         lua_pushcfunction(L, l_mod_file_exists);
         lua_setfield(L, -2, "file_exists");
+
+        text_input::register_api(L, handle->mod_id);
 
         lua_newtable(L);
         luaL_setfuncs(L, mod_patch_functions, 0);
