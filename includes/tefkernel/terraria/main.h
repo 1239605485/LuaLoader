@@ -50,6 +50,12 @@ DEFINE_FUNCTION(int, terraria_main_get_cur_release)
  */
 DEFINE_FUNCTION(patch_handle_t, terraria_main_get_graphics_device)
 
+/**
+ * @brief 获取当前人物实例
+ * @return 人物实例
+ */
+DEFINE_FUNCTION(patch_handle_t, terraria_main_get_local_player)
+
 #ifdef __cplusplus
 }
 #endif

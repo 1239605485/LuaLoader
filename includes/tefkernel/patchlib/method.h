@@ -89,28 +89,6 @@ DEFINE_FUNCTION(patch_handle_t, patchlib_method_make_generic_instance, patch_han
  * @return 成功返回函数指针，否则返回NULL
  */
 DEFINE_FUNCTION(void *, patchlib_method_get_pointer, patch_handle_t method)
-
-/**
- * @brief 描述一个按值传递的托管值类型参数（Vector2/Color 等托管结构体）。
- *
- * field_types 只允许基础标量类型，字段按托管结构体的自然顺序排列；
- * data_size 必须等于结构体的本体大小。
- */
-typedef struct patchlib_value_arg_t {
-    const void *data;
-    size_t data_size;
-    const patch_type_t *field_types;
-    size_t field_count;
-} patchlib_value_arg_t;
-
-/**
- * @brief 使用显式值类型描述调用方法（Android）。
- * @param value_args 参数描述数组，长度必须等于方法显式参数数量；
- *        非结构体参数位置填 NULL，结构体参数位置填描述对象。
- */
-DEFINE_FUNCTION(bool, patchlib_method_invoke_value_args, patch_handle_t method,
-                patch_handle_t instance, void *return_value, void **args,
-                const patchlib_value_arg_t *value_args)
 #endif
 
 /**
@@ -134,6 +112,7 @@ DEFINE_FUNCTION(bool, patchlib_method_invoke_args, patch_handle_t method, patch_
 DEFINE_FUNCTION(bool, patchlib_constructor_invoke, patch_handle_t constructor,
                 patch_handle_t *return_instance, void **args)
 
+
 // ==================== 高级 ====================
 
 typedef short patch_hook_id_t;
@@ -146,6 +125,8 @@ typedef struct patch_method_signature_t {
     tefstd_vector_t arg_types; ///< patch_type_t，参数类型
     tefstd_vector_t arg_names; ///< const char*, 参数名称
     int token;              ///< Token
+    tefstd_vector_t arg_type_handles;    // patch_handle_t，与 arg_types 一一对应 ← 新增
+    patch_handle_t return_type_handle;  // patch_handle_t，返回值真实类型句柄
 } patch_method_signature_t;
 
 /**

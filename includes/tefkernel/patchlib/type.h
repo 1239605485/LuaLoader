@@ -43,7 +43,6 @@ extern "C" {
 /* 平台相关类型定义 */
 typedef void *patch_handle_t;
 #define PATCH_NULL NULL
-
 // 基本类型枚举
 typedef enum {
     PATCH_VOID,
@@ -60,7 +59,8 @@ typedef enum {
     PATCH_DOUBLE,
     PATCH_POINTER,
     PATCH_OBJECT,
-    PATCH_CHAR
+    PATCH_CHAR,
+    PATCH_STRUCT
 } patch_type_t;
 
 #define PATCH_TYPE_TO_NATIVE(type) \

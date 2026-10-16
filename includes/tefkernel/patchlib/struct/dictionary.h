@@ -74,6 +74,21 @@ DEFINE_FUNCTION(bool, patchlib_dictionary_get_value, patch_handle_t dictionary, 
 DEFINE_FUNCTION(bool, patchlib_dictionary_set_value, patch_handle_t dictionary, void* key, void* value);
 
 /**
+ * @brief 修改键对（显式提供字典类型句柄）
+ * @param dictionary dictionary实例
+ * @param dictionary_type 该字典的闭合泛型类型句柄
+ *        （通常来自 patchlib_field_get_type_handle(字段)）
+ * @param key 键值指针
+ * @param value 值指针
+ * @return 执行结果
+ *
+ * @note 与 patchlib_dictionary_set_value 等价，但不依赖
+ *       il2cpp_object_get_class()（该函数在某些加载器/运行时上不可用）。
+ */
+DEFINE_FUNCTION(bool, patchlib_dictionary_set_value_typed, patch_handle_t dictionary,
+                patch_handle_t dictionary_type, void* key, void* value);
+
+/**
  * @brief 清空dictionary
  * @param dictionary dictionary实例
  * @return 执行结果

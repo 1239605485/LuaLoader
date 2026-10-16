@@ -1538,7 +1538,6 @@ namespace lualoader::lua_api {
     struct LuaStructArg {
         void *data;                 // 结构体本体（malloc）
         size_t data_size;
-        patchlib_value_arg_t spec;  // data/data_size/field_types/field_count
         patch_type_t field_types[MAX_STRUCT_FIELDS];
     };
 
@@ -1616,10 +1615,6 @@ namespace lualoader::lua_api {
         }
 
         sa->data_size = total;
-        sa->spec.data = sa->data;
-        sa->spec.data_size = total;
-        sa->spec.field_types = sa->field_types;
-        sa->spec.field_count = static_cast<size_t>(n);
         return 1;
     }
 
@@ -1643,26 +1638,27 @@ namespace lualoader::lua_api {
         const int argc = static_cast<int>(tefstd_vector_size(&sig.arg_types));
         uint64_t storage[MAX_CALL_ARGS][1] = {};
         void *argv[MAX_CALL_ARGS] = {};
-        const int built = build_arg_array(L, arg_start, &sig, storage, argv, MAX_CALL_ARGS);
-        if (built < 0) {
-            patchlib_method_signature_free(&sig);
-            if (built == -1) return luaL_error(L, "too many method arguments (max %d)", MAX_CALL_ARGS);
-            return luaL_error(L, "method argument type mismatch");
-        }
 
-        // 结构体参数：替换 args[i] 并填 value_args[i]
-        patchlib_value_arg_t value_args[MAX_CALL_ARGS] = {};
+        // 逐个参数编组：struct_arg 用户数据直接给出结构体字节；
+        // 其余参数按方法签名类型读值。按值结构体由内核依据方法签名自动处理。
         for (int i = 0; i < argc && i < MAX_CALL_ARGS; ++i) {
             lua_rawgeti(L, arg_start, i + 1);
             if (auto *sa = static_cast<LuaStructArg *>(luaL_testudata(L, -1, STRUCT_ARG_MT))) {
                 argv[i] = sa->data;
-                value_args[i] = sa->spec;
+            } else {
+                const auto type = *static_cast<patch_type_t *>(tefstd_vector_at(&sig.arg_types, i));
+                if (!try_read_patch_value(L, -1, type, &storage[i])) {
+                    lua_pop(L, 1);
+                    patchlib_method_signature_free(&sig);
+                    return luaL_error(L, "argument %d type mismatch", i + 1);
+                }
+                argv[i] = &storage[i];
             }
             lua_pop(L, 1);
         }
 
         uint64_t result = 0;
-        const bool ok = patchlib_method_invoke_value_args(method, instance, &result, argv, value_args);
+        const bool ok = patchlib_method_invoke_args(method, instance, &result, argv);
         const patch_type_t return_type = sig.return_type;
         patchlib_method_signature_free(&sig);
         if (!ok) {

@@ -116,6 +116,15 @@ DEFINE_FUNCTION(size_t, patchlib_field_get_size, patch_handle_t field)
  */
 DEFINE_FUNCTION(patch_type_t, patchlib_field_get_type, patch_handle_t field)
 
+/**
+ * @brief 获取字段声明的类型句柄（Il2CppClass/System.Type）
+ * @param field 字段句柄
+ * @return 类型句柄；失败返回 PATCH_NULL
+ * @note 与 patchlib_field_get_type 不同，这里返回的是原始类型句柄，
+ *       可直接用于 patchlib_type_get_method_by_param_count 等类型 API。
+ */
+DEFINE_FUNCTION(patch_handle_t, patchlib_field_get_type_handle, patch_handle_t field)
+
 #if __ANDROID__
 
 #    define patchlib_field_free(handle) ((void)0)
