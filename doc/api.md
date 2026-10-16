@@ -516,7 +516,9 @@ mod.item.register{
 }
 ```
 
-返回分配到的 `runtime_id`（即物品 type id）；注册失败返回 `nil`。
+返回注册结果：`runtime_id` 要等内核分配物品 ID 后才有值，注册阶段通常为 `-1`
+（一般在 `mod.init` 里注册，之后可用 `mod.item.runtime_id(name)` 取实时 id）。
+注册失败返回 `nil`。
 
 ### 字段
 
@@ -544,6 +546,14 @@ my_mod/Resources/lib/Image/sword.png  # 与入口脚本同级也行
 
 `texture = "sword.png"` 会依次找 `lib/Image/`、`lib/`、`Image/`、`Resources/Image/`。
 PNG 会被解码为 RGBA32（Android 下自动做 Y 轴翻转）。不放贴图则使用内核默认贴图。
+
+### 取运行时 ID
+
+```lua
+local id = mod.item.runtime_id("test_sword")   -- 内核分配 ID 之后才有值，未就绪返回 nil
+```
+
+`register` 的返回值同理：注册阶段通常为 `-1`，需要 id 时请用上面的接口。
 
 ### 说明
 

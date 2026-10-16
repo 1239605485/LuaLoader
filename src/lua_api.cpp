@@ -2384,14 +2384,17 @@ namespace lualoader::lua_api {
 
     static void lua_item_recipes() {
         for (LuaItemEntry *e: g_lua_items) {
-            if (!e->has_recipe || e->runtime_id < 0) continue;
+            if (!e->has_recipe) continue;
+            // runtime_id 由内核在分配阶段写入，注册时通常还是 -1，故必须读实时值
+            const int runtime_id = e->item.runtime_id;
+            if (runtime_id < 0) continue;
             std::vector<int> mats;
             mats.reserve(e->recipe_materials.size() * 2);
             for (const auto &m: e->recipe_materials) {
                 mats.push_back(m.first);
                 mats.push_back(m.second);
             }
-            terraria_recipe_set_result(e->runtime_id, e->recipe_stack);
+            terraria_recipe_set_result(runtime_id, e->recipe_stack);
             if (!mats.empty())
                 terraria_recipe_set_material(mats.data(), static_cast<int>(mats.size() / 2));
             terraria_recipe_set_station(e->recipe_station);
@@ -2634,8 +2637,23 @@ namespace lualoader::lua_api {
         return 1;
     }
 
+    static int l_item_runtime_id(lua_State *L) {
+        const char *name = luaL_checkstring(L, 1);
+        lua_mod_handle_t *handle = get_handle(L);
+        for (LuaItemEntry *e: g_lua_items) {
+            if (e->owner == handle && e->name == name) {
+                if (e->item.runtime_id >= 0) lua_pushinteger(L, e->item.runtime_id);
+                else lua_pushnil(L);
+                return 1;
+            }
+        }
+        lua_pushnil(L);
+        return 1;
+    }
+
     static const luaL_Reg mod_item_functions[] = {
             {"register", l_item_register},
+            {"runtime_id", l_item_runtime_id},
             {nullptr, nullptr},
     };
 
@@ -2644,8 +2662,8 @@ namespace lualoader::lua_api {
         for (size_t i = g_lua_items.size(); i-- > 0;) {
             LuaItemEntry *e = g_lua_items[i];
             if (e->owner != handle) continue;
-            if (e->registered && e->runtime_id >= 0)
-                terraria_item_manager_unregister_item_by_id(e->runtime_id);
+            if (e->registered && e->item.runtime_id >= 0)
+                terraria_item_manager_unregister_item_by_id(e->item.runtime_id);
             if (handle->L) {
                 if (e->defaults_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->defaults_ref);
