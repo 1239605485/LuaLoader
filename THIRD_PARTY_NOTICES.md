@@ -16,6 +16,7 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 | KernelLoader `mod_logger.h` | — | **MIT** | © 2026 eternalfuture-e38299 | `mod-api/` | Mod 日志桥接 |
 | stb_image | 2.30 | **MIT 或 Public Domain（Unlicense）双许可，任选其一** | © 2017 Sean Barrett | `includes/vendor/stb_image.h` | PNG 解码（仅启用 PNG） |
 | xDL | 2.3.0 | **MIT** | © 2020-2024 HexHacking Team | `lib/gui-xdl/` | Android 符号查找回退（`xdl_open` 等） |
+| rime-pinyin-simp（袖珍简化字拼音） | 0.1 | **Apache-2.0** | © rime 及 AOSP PinyinIME 作者（见 `lib/ime/AUTHORS-rime-pinyin-simp.txt`） | `lib/ime/pinyin_simp.dict.yaml` | 内置拼音输入法词库（字+词，带权重） |
 
 ## 许可证原文
 
@@ -30,6 +31,7 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 | `LICENSES/MIT-kernelloader.txt` | KernelLoader `mod_logger.h` | `mod-api/mod_logger.h`（随附头文件） |
 | `LICENSES/stb_image.txt` | stb_image 2.30 | <https://raw.githubusercontent.com/nothings/stb/master/LICENSE> |
 | `LICENSES/MIT-xdl.txt` | xDL 2.3.0 | <https://raw.githubusercontent.com/hexhacking/xDL/master/LICENSE> |
+| `LICENSES/Apache-2.0-rime-pinyin-simp.txt` | rime-pinyin-simp（袖珍简化字拼音） | <https://github.com/rime/rime-pinyin-simp/blob/master/LICENSE> |
 
 ## 说明
 
@@ -43,5 +45,9 @@ LuaLoader 本体以 **AGPL-3.0-or-later** 发布，完整许可见 [`LICENSE`](L
 - 组件升级时，请同步更新本文件与 `LICENSES/`，并核对版本号与上游许可原文。
 - **stb_image**：vendored 于 `includes/vendor/stb_image.h`（上游 <https://github.com/nothings/stb>），双许可 MIT / Public Domain 任选其一；本项目仅启用 PNG。文件 SHA-256：`594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3`。
 - **xDL**：位于 `lib/gui-xdl/`，仅用于 Android 符号查找回退；版权与 MIT 原文见 `LICENSES/MIT-xdl.txt`。
+- **rime-pinyin-simp**：位于 `lib/ime/`，为内置拼音输入法的词库（字+词，带权重）。
+  上游 `rime/rime-pinyin-simp` 以 **Apache-2.0** 发布；其 `pinyin_simp.dict.yaml` 派生自
+  AOSP `PinyinIME`（Apache-2.0）。版权与许可原文见 `LICENSES/Apache-2.0-rime-pinyin-simp.txt`
+  与 `lib/ime/AUTHORS-rime-pinyin-simp.txt`。Apache-2.0 与本项目的 AGPL-3.0 兼容。
 
 > 本说明不构成法律意见；如需正式合规审查，请咨询专业人士。

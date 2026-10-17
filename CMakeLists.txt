@@ -30,6 +30,9 @@ set(LUALOADER_SOURCES
         src/mod_api.cpp
         src/gui.cpp
         src/gui_images.cpp
+        src/gui_ime.cpp
+        src/gui_keyboard.cpp
+        src/pinyin.cpp
         src/image_decode.cpp
         includes/tefkernel/tef_api_imp.c
 )

@@ -42,6 +42,9 @@
 #include "gui_icon_gesture.hpp"
 #include "gui_click_state.hpp"
 #include "gui_keyboard_bounds.hpp"
+#include "gui_ime.hpp"
+#include "gui_keyboard.hpp"
+#include "pinyin.hpp"
 
 #include <cctype>
 #include <algorithm>
@@ -718,6 +721,19 @@ namespace lualoader::gui {
             return len;
         }
 
+        // 删除末尾一个完整 UTF-8 字符（退格用；避免只删一字节留下乱码）
+        void utf8_pop_back(std::string &s) {
+            if (s.empty()) return;
+            size_t i = s.size();
+            size_t cont = 0;
+            while (i > 0 && (static_cast<unsigned char>(s[i - 1]) & 0xC0) == 0x80 && cont < 3) {
+                --i;
+                ++cont;
+            }
+            if (i > 0) --i;
+            s.erase(i);
+        }
+
         float text_width(const char *s, const float scale = 1.0f) {
             if (!s) return 0.0f;
             float w = 0.0f;
@@ -969,6 +985,11 @@ namespace lualoader::gui {
             std::string owner;
             std::string buf;
             bool shift{false};
+            // 内置拼音输入法（PC：硬件键盘打拼音 -> 候选栏选词）
+            std::string pinyin;              // 当前拼音串（小写字母）
+            std::vector<std::string> cands;  // 当前候选（最多 90，按页展示）
+            bool ime_on{true};               // 中/英（Shift 单击切换）
+            size_t page{0};                  // 候选翻页
         };
         EditState g_edit;
 
@@ -1024,7 +1045,7 @@ namespace lualoader::gui {
         bool point_in_gui(const float x, const float y) {
             if (x == -FLT_MAX || y == -FLT_MAX) return false;
             if(!folder_hit(x,y).empty())return true;
-            if (g_edit.active) {
+            if (g_edit.active && !ime::supported() && !kbd::supported()) {
                 const float sw = g_screen_w > 0 ? static_cast<float>(g_screen_w) : 0.0f;
                 const float sh = g_screen_h > 0 ? static_cast<float>(g_screen_h) : 0.0f;
                 if (keyboard_contains(x, y, g_scale, sw, sh)) return true;
@@ -1198,6 +1219,69 @@ namespace lualoader::gui {
                 consumed = true;
             }
             draw_key_box(x, y, w, h, label, hovered);
+        }
+
+        /// 拼音输入法候选栏（PC：底部居中，数字键/点击选词，-/= 翻页）
+        void draw_ime_bar() {
+            if (g_edit.pinyin.empty()) return;
+            constexpr size_t kPageSize = 9;
+            const float h = 30.0f * g_scale;
+            const float gap = 6.0f * g_scale;
+            const float pad = 8.0f * g_scale;
+            const size_t first = g_edit.page * kPageSize;
+            const size_t last = std::min<size_t>(g_edit.cands.size(), first + kPageSize);
+            const bool has_prev = g_edit.page > 0;
+            const bool has_more = last < g_edit.cands.size();
+
+            // 依次排布：模式 / ◀ / 候选… / 无候选 / ▶
+            float total = 0.0f;
+            auto chip_w = [&](const std::string &s) { return text_width(s.c_str()) + 16.0f * g_scale; };
+            std::vector<std::string> labels;
+            labels.push_back(g_edit.ime_on ? "中" : "英");
+            if (has_prev) labels.push_back("◀");
+            for (size_t i = first; i < last; ++i)
+                labels.push_back(std::to_string(i - first + 1) + "." + g_edit.cands[i]);
+            if (g_edit.cands.empty()) labels.push_back("无候选");
+            if (has_more) labels.push_back("▶");
+            for (auto &s: labels) total += chip_w(s) + gap;
+            total -= gap;
+
+            float x = (g_screen_w - total) * 0.5f;
+            const float y = g_screen_h - h - 12.0f * g_scale;
+            draw_rect(x - pad, y - pad, total + 2 * pad, h + 2 * pad, kPanel);
+
+            auto chip = [&](const std::string &label, const char *id) -> bool {
+                const float w = chip_w(label);
+                const bool hover = mouse_in(x, y, w, h);
+                if (hover) g_hover_gui = true;
+                const bool clicked = widget_click(id, x, y, hover);
+                draw_rect(x, y, w, h, hover ? kBtnHover : kBtn);
+                draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, label.c_str(), kText, 1.0f);
+                x += w + gap;
+                return clicked;
+            };
+
+            chip(g_edit.ime_on ? "中" : "英", "ime-mode");
+            if (has_prev && chip("◀", "ime-prev")) {
+                if (g_edit.page > 0) --g_edit.page;
+                return;
+            }
+            for (size_t i = first; i < last; ++i) {
+                const std::string label = std::to_string(i - first + 1) + "." + g_edit.cands[i];
+                const std::string id = "ime-cand" + std::to_string(i - first);
+                if (chip(label, id.c_str())) {
+                    g_edit.buf += g_edit.cands[i];
+                    g_edit.pinyin.clear();
+                    g_edit.cands.clear();
+                    g_edit.page = 0;
+                    return;
+                }
+            }
+            if (g_edit.cands.empty()) chip("无候选", "ime-none");
+            if (has_more && chip("▶", "ime-next")) {
+                ++g_edit.page;
+                return;
+            }
         }
 
         void draw_virtual_keyboard() {
@@ -1596,9 +1680,14 @@ namespace lualoader::gui {
                 g_edit.active = true;
                 g_edit.owner = id;
                 g_edit.buf = value;
+                if (ime::supported()) {
+                    ime::open(value);            // Android：弹出系统键盘（支持中文输入法）
+                } else if (kbd::supported()) {
+                    kbd::reset();
+                }
             }
 
-            const std::string shown = editing ? (g_edit.buf + "|") : std::string(value[0] ? value : "(tap to edit)");
+            const std::string shown = editing ? (g_edit.buf + g_edit.pinyin + "|") : std::string(value[0] ? value : "(tap to edit)");
             draw_rect(x, y, w, h, editing ? kBtnActive : (hovered ? kBtnHover : kBtn));
             draw_string(x + 8.0f * g_scale, y + (h - line_height()) * 0.5f, shown.c_str(), kText, 1.0f);
 
@@ -1894,6 +1983,8 @@ namespace lualoader::gui {
 
         patch_hook_id_t g_draw_hook = PATCH_HOOK_INVALID_ID;
         patch_hook_id_t g_update_hook = PATCH_HOOK_INVALID_ID;
+        patch_hook_id_t g_pi_hook = PATCH_HOOK_INVALID_ID; // PlayerInput.Update（IME 启用用）
+        patch_hook_id_t g_cursor_hook = PATCH_HOOK_INVALID_ID; // Main.DrawCursor（GUI 时接管光标）
         bool g_installed = false;
         bool g_in_render = false;
 #if defined(__ANDROID__)
@@ -2029,7 +2120,7 @@ namespace lualoader::gui {
                     break;
                 }
             }
-            if (!any_gui) {clear_text_cache();images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};g_scrolls.clear();g_active_scroll.clear();
+            if (!any_gui) {clear_text_cache();images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};ime::close();kbd::reset();g_scrolls.clear();g_active_scroll.clear();
                 g_pointer_owner.clear();g_input_owner.clear();g_drag_id.clear();g_slider_active.clear();g_click_state.reset();g_render_owner.clear();g_mouse_down=g_prev_mouse_down=false;
 #if defined(__ANDROID__)
                 g_active_cursor_valid=false;g_captured_touches.clear();
@@ -2061,7 +2152,7 @@ namespace lualoader::gui {
             for(const auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF)owners.push_back(kv.second->mod_id);
             images::prune(owners);
             auto owner_alive=[&owners](const std::string &key){for(const auto &id:owners)if(key.rfind(id+"#",0)==0)return true;return false;};
-            if(g_edit.active && !owner_alive(g_edit.owner))g_edit=EditState{};
+            if(g_edit.active && !owner_alive(g_edit.owner)){g_edit=EditState{};ime::close();kbd::reset();}
             for(auto it=g_scrolls.begin();it!=g_scrolls.end();)if(!owner_alive(it->first))it=g_scrolls.erase(it);else ++it;
             if(!g_active_scroll.empty()&&!owner_alive(g_active_scroll))g_active_scroll.clear();
             for(auto it=g_headers.begin();it!=g_headers.end();){if(!owner_alive(it->first))it=g_headers.erase(it);else ++it;}
@@ -2100,7 +2191,7 @@ namespace lualoader::gui {
             if(g_input_owner.empty())g_input_owner=folder_hit(g_mouse_x,g_mouse_y);
             if(g_mouse_pressed&&g_input_owner.rfind("#folder:",0)==0)g_pointer_owner=g_input_owner;
             if(g_input_owner=="#keyboard" && !g_edit.active)g_input_owner.clear();
-            if(g_edit.active && keyboard_contains(g_mouse_x,g_mouse_y,g_scale,g_screen_w,g_screen_h))g_input_owner="#keyboard";
+            if(g_edit.active && !ime::supported() && !kbd::supported() && keyboard_contains(g_mouse_x,g_mouse_y,g_scale,g_screen_w,g_screen_h))g_input_owner="#keyboard";
             if(g_input_owner.empty()){
                 int top=-1;
                 for(auto *h:windows){const auto &ws=g_windows[h->mod_id];if(!ws.visible||grouped_icon(h->mod_id))continue;
@@ -2124,13 +2215,98 @@ namespace lualoader::gui {
 
             g_style_window=nullptr;
             if (g_edit.active){
-                g_cmds.clear();g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
+                if (ime::supported()){
+                    // Android：轮询系统软键盘，取代自绘虚拟键盘
+                    std::string t;
+                    const int st = ime::poll(t);
+                    if (st == 0) g_edit.buf = t;                                  // 仍在编辑
+                    else if (st == 1 || st == 3) { g_edit.buf = t; g_edit.active = false; } // 完成/失焦：提交
+                    else g_edit.active = false;                                    // 2 = 取消：丢弃
+                } else if (kbd::supported()){
+                    // PC：硬件键盘 -> 内置拼音输入法（单独按 Shift 切换中/英）
+                    kbd::Event ev; kbd::poll(ev);
+                    constexpr size_t kPageSize = 9;
+                    auto refresh = [&]() {
+                        g_edit.cands.clear();
+                        g_edit.page = 0;
+                        if (!g_edit.ime_on || g_edit.pinyin.empty()) return;
+                        for (auto &c: pinyin::query(g_edit.pinyin, kPageSize * 10))
+                            g_edit.cands.push_back(c.text);
+                    };
+                    auto commit = [&](const std::string &s) {
+                        g_edit.buf += s;
+                        g_edit.pinyin.clear();
+                        g_edit.cands.clear();
+                        g_edit.page = 0;
+                    };
+                    if (ev.toggle_ime) {
+                        g_edit.ime_on = !g_edit.ime_on;
+                        g_edit.pinyin.clear();
+                        g_edit.cands.clear();
+                        g_edit.page = 0;
+                        LOG_INFO("[ime] 中/英: {}", g_edit.ime_on ? "中" : "英");
+                    }
+                    if (!ev.ime.empty()) g_edit.buf += ev.ime;
+                    bool pinyin_dirty = false;
+                    const bool paging = g_edit.ime_on && !g_edit.pinyin.empty();
+                    for (char ch: ev.append) {
+                        if (paging && (ch == '-' || ch == '_')) {                 // 上一页
+                            if (g_edit.page > 0) --g_edit.page;
+                            continue;
+                        }
+                        if (paging && (ch == '=' || ch == '+')) {                 // 下一页
+                            if ((g_edit.page + 1) * kPageSize < g_edit.cands.size()) ++g_edit.page;
+                            continue;
+                        }
+                        if (g_edit.ime_on && ch >= 'a' && ch <= 'z') {
+                            g_edit.pinyin.push_back(ch);
+                            pinyin_dirty = true;
+                        } else if (g_edit.ime_on && ch >= 'A' && ch <= 'Z') {
+                            g_edit.pinyin.push_back(static_cast<char>(ch - 'A' + 'a'));
+                            pinyin_dirty = true;
+                        } else if (g_edit.ime_on && ch >= '1' && ch <= '9' && !g_edit.cands.empty()) {
+                            const size_t idx = g_edit.page * kPageSize + static_cast<size_t>(ch - '1');
+                            if (idx < g_edit.cands.size()) commit(g_edit.cands[idx]);
+                        } else if (g_edit.ime_on && ch == ' ' && !g_edit.pinyin.empty()) {
+                            commit(g_edit.cands.empty() ? g_edit.pinyin : g_edit.cands[0]);
+                        } else {
+                            g_edit.buf.push_back(ch);
+                        }
+                    }
+                    if (ev.backspace) {
+                        if (g_edit.ime_on && !g_edit.pinyin.empty()) {
+                            g_edit.pinyin.pop_back();
+                            pinyin_dirty = true;
+                        } else {
+                            utf8_pop_back(g_edit.buf); // 按整个字符删（修中文删两下）
+                        }
+                    }
+                    if (pinyin_dirty) refresh();
+                    if (ev.enter) {
+                        if (g_edit.ime_on && !g_edit.pinyin.empty())
+                            commit(g_edit.cands.empty() ? g_edit.pinyin : g_edit.cands[0]);
+                        else g_edit.active = false;
+                    }
+                    if (ev.escape) {
+                        if (!g_edit.pinyin.empty()) {
+                            g_edit.pinyin.clear();
+                            g_edit.cands.clear();
+                            g_edit.page = 0;
+                        } else g_edit.active = false;
+                    }
+                } else {
+                    // 兜底：自绘虚拟键盘
+                    g_cmds.clear();g_recording=true;draw_virtual_keyboard();g_recording=false;flush_cmds();
+                }
+                if (!g_edit.active) { kbd::reset(); }
+                if (g_edit.active && !g_edit.pinyin.empty()) {
+                    g_cmds.clear();g_recording=true;draw_ime_bar();g_recording=false;flush_cmds();
+                }
             }
             if(!g_mouse_down)g_active_scroll.clear();
             g_click_state.finish(g_mouse_down,g_mouse_released);
 
             sb_end();
-
             g_sb = nullptr;
 #if defined(__ANDROID__)
             release_finished_touches();
@@ -2143,7 +2319,7 @@ namespace lualoader::gui {
             }
         }
 
-        void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
+        void render_guarded() {
             if (g_in_render) return;
             struct RenderGuard{~RenderGuard(){g_in_render=false;g_recording=false;g_ctx=nullptr;g_sb=nullptr;g_style_window=nullptr;g_current_mod.clear();g_render_owner.clear();g_cmds.clear();g_scroll_stack.clear();g_viewport={};g_scroll_drag=false;}} guard;
             g_in_render = true;
@@ -2152,6 +2328,10 @@ namespace lualoader::gui {
                 if(g_sb){try{sb_end();}catch(...){}}
                 g_click_state.reset();g_drag_id.clear();g_slider_active.clear();g_pointer_owner.clear();
             }
+        }
+
+        void frame_postfix(patch_handle_t, void **, void *, const patch_method_signature_t *) {
+            render_guarded();
         }
 
     } // namespace
@@ -2223,6 +2403,14 @@ namespace lualoader::gui {
             patchlib_uninstall_hook(g_update_hook);
             g_update_hook = PATCH_HOOK_INVALID_ID;
         }
+        if (g_pi_hook != PATCH_HOOK_INVALID_ID) {
+            patchlib_uninstall_hook(g_pi_hook);
+            g_pi_hook = PATCH_HOOK_INVALID_ID;
+        }
+        if (g_cursor_hook != PATCH_HOOK_INVALID_ID) {
+            patchlib_uninstall_hook(g_cursor_hook);
+            g_cursor_hook = PATCH_HOOK_INVALID_ID;
+        }
 #if defined(__ANDROID__)
         if(g_layer_hook!=PATCH_HOOK_INVALID_ID)patchlib_uninstall_hook(g_layer_hook);
         if(g_cursor_list_hook!=PATCH_HOOK_INVALID_ID)patchlib_uninstall_hook(g_cursor_list_hook);
@@ -2234,7 +2422,7 @@ namespace lualoader::gui {
         g_scrolls.clear();g_scroll_stack.clear();g_active_scroll.clear();g_viewport={};
         g_style_window=nullptr;g_ctx=nullptr;g_sb=nullptr;g_recording=false;g_in_render=false;
         save_layout();g_folders.clear();g_open_folder.clear();g_member_gestures.clear();g_position_applied.clear();
-        g_windows.clear();g_headers.clear();g_edit=EditState{};g_cmds.clear();g_next_window_order=0;
+        g_windows.clear();g_headers.clear();g_edit=EditState{};ime::close();kbd::reset();g_cmds.clear();g_next_window_order=0;
         g_render_owner.clear();g_input_owner.clear();g_pointer_owner.clear();g_current_mod.clear();
         g_drag_id.clear();g_slider_active.clear();g_click_state.reset();
         g_mouse_down=g_prev_mouse_down=g_mouse_pressed=g_mouse_released=g_hover_gui=false;

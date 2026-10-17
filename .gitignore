@@ -20,3 +20,6 @@ Cache
 # local verify build dirs
 build-verify/
 build-verify-apk/
+
+# 内核库（打包用，不入库）
+libtefkernel.*.so
