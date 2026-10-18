@@ -2211,6 +2211,7 @@ namespace lualoader::lua_api {
         std::vector<unsigned char> tex_pixels;
         int tex_w, tex_h;
         bool tex_tried;
+        int prefix_class;   // 0=不可重铸；见 mod.item.register 的 prefixes
         bool has_recipe;
         int recipe_stack;
         std::vector<std::pair<int, int> > recipe_materials;
@@ -2526,6 +2527,26 @@ namespace lualoader::lua_api {
             lua_pop(L, 1);
         }
 
+        // prefixes：声明可重铸的词缀池（不写 = 不可重铸）
+        //   sword/melee → 1, spear → 2, gun/bow/ranged → 3, magic → 4,
+        //   summon → 5, boomerang/thrown → 6, accessory → 7
+        lua_getfield(L, 1, "prefixes");
+        if (lua_type(L, -1) == LUA_TSTRING) {
+            const char *pv = lua_tostring(L, -1);
+            if (!pv) pv = "";
+            if (!strcmp(pv, "sword") || !strcmp(pv, "melee")) e->prefix_class = 1;
+            else if (!strcmp(pv, "spear")) e->prefix_class = 2;
+            else if (!strcmp(pv, "gun") || !strcmp(pv, "bow") || !strcmp(pv, "ranged")) e->prefix_class = 3;
+            else if (!strcmp(pv, "magic")) e->prefix_class = 4;
+            else if (!strcmp(pv, "summon")) e->prefix_class = 5;
+            else if (!strcmp(pv, "boomerang") || !strcmp(pv, "thrown")) e->prefix_class = 6;
+            else if (!strcmp(pv, "accessory")) e->prefix_class = 7;
+            else LOG_WARN("[mod.item] {}: 未知 prefixes 值 {}（忽略）", item_name, pv);
+        } else if (lua_type(L, -1) == LUA_TNUMBER) {
+            e->prefix_class = (int) lua_tointeger(L, -1);
+        }
+        lua_pop(L, 1);
+
         lua_getfield(L, 1, "can_use");
         if (lua_isfunction(L, -1)) e->can_use_ref = luaL_ref(L, LUA_REGISTRYINDEX);
         else lua_pop(L, 1);
@@ -2626,6 +2647,10 @@ namespace lualoader::lua_api {
             lua_pushnil(L);
             return 1;
         }
+
+        // 声明可重铸类别（不声明 = 不可重铸）
+        if (e->prefix_class > 0)
+            terraria_item_manager_set_prefix_class(&e->item, e->prefix_class);
 
         e->registered = true;
         e->runtime_id = e->item.runtime_id;

@@ -122,6 +122,14 @@ DEFINE_FUNCTION(terraria_item_handle_t*, terraria_item_manager_get_item, int run
  */
 DEFINE_FUNCTION(tefstd_vector_t*, terraria_item_manager_get_items)
 
+/**
+ * @brief 声明某个自定义物品可重铸，并指定词缀池
+ * @param item_handle  注册时传给内核的物品句柄
+ * @param prefix_class 0=不可重铸 1=剑/斧/镐 2=长矛 3=枪/弓 4=魔法 5=召唤 6=回旋镖 7=饰品
+ * @note 不声明即不可重铸（内核不做任何推断）
+ */
+DEFINE_FUNCTION(void, terraria_item_manager_set_prefix_class, terraria_item_handle_t* item_handle, int prefix_class)
+
 #ifdef __cplusplus
 }
 #endif
