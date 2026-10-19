@@ -26,6 +26,7 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [Hook](#hook)
   - [句柄与生命周期](#句柄与生命周期)
 - [`mod.item`：注册自定义物品](#moditem注册自定义物品)
+- [`mod.projectile`：注册自定义弹幕](#modprojectile注册自定义弹幕)
 - [调试与热重载](#调试与热重载)
 - [常见陷阱](#常见陷阱)
 - [完整示例](#完整示例)
@@ -561,6 +562,68 @@ local id = mod.item.runtime_id("test_sword")   -- 内核分配 ID 之后才有�
 - `defaults` 里的字段名需与 `Terraria.Item` 字段同名；值类型不匹配会打日志并忽略。
 - 物品贴图与本地化在加载时预生成，`language`/`can_use` 等回调会在游戏线程被调用。
 - 卸载 Mod（`/reload` 或退出）时会自动注销其注册的物品。
+
+---
+
+## `mod.projectile`：注册自定义弹幕
+
+在游戏初始化前注册自定义弹幕（与 `mod.item` 同时机）。一个 Mod 可注册多个；`name` 在 Mod 内唯一。
+
+```lua
+mod.projectile.register{
+    name     = "lua_orb",              -- 内部名（必填，同 Mod 内唯一）
+    texture  = "orb.png",              -- PNG，见 mod.item 的“贴图”一节
+    no_ai    = false,                  -- true = 不接管 AI，沿用原版 aiStyle
+    defaults = {                       -- Projectile 字段默认值（表或 function(projectile)）
+        width = 16, height = 16,
+        damage = 18, knockBack = 2.0, timeLeft = 300, penetrate = 1,
+        tileCollide = false, ignoreWater = true,
+        friendly = true, hostile = false, light = 0.7, scale = 1.0,
+    },
+    ai = function(p)                   -- 每帧 AI；写了 ai 就由 Lua 接管
+        -- ...
+    end,
+}
+```
+
+返回注册结果（同 `mod.item`：注册阶段为 `-1`）；用 `mod.projectile.runtime_id(name)` 取实时 id。
+
+### 字段
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` | string | **必填**。内部名，与 Mod id 一起构成存档键 |
+| `texture` | string | PNG 相对路径；不放则用内核占位贴图 |
+| `no_ai` | bool | 默认 `false`。`true` 表示不接管 AI，沿用 `defaults` 里的 `aiStyle` |
+| `defaults` | table / function | `Projectile` 字段默认值。函数形式收到的是**非托管句柄**，需用 `mod.patch.set_field_value` 写（见“字段读写”） |
+| `ai` | function | 可选。`function(projectile) end`，每帧调用。**写了就跳过原版 AI** |
+
+### ⚠ 写了 `ai` 就要自己算位移
+
+内核的做法是：**命中自定义弹幕类型时调用你的 `ai`，并跳过原版 `Projectile.AI()`**（与 tModLoader 一致）。
+
+而原版 `Projectile.Update()` **只在 `AI()` 里**做 `position += velocity`。所以只改 `velocity` 而不管 `position`，弹幕会**停在原地**（看起来像“没射出去”）：
+
+```lua
+ai = function(p)
+    local f_pos = mod.patch.get_field(mod.patch.get_type("Terraria", "Projectile"), "position")
+    local f_vel = mod.patch.get_field(mod.patch.get_type("Terraria", "Projectile"), "velocity")
+    local x, y = mod.patch.get_field_vec2(f_pos, p)
+    local vx, vy = mod.patch.get_field_vec2(f_vel, p)
+    -- ... 修改 vx / vy ...
+    mod.patch.set_field_vec2(f_vel, p, vx, vy)
+    mod.patch.set_field_vec2(f_pos, p, x + vx, y + vy)   -- ← 必须自己算
+end
+```
+
+`timeLeft`、命中判定（`Damage()`）等仍由原版 `Update()` 负责，不用自己写。
+想沿用原版移动/AI：不要写 `ai`（或 `no_ai = true`），只填 `defaults` 里的 `aiStyle`。
+
+### 说明
+
+- 必须在**游戏分配弹幕 ID 之前**注册（即 `mod.init` 阶段），否则拿不到 `runtime_id`。
+- 内核会自动按自定义 id 扩容 `TextureAssets.Projectile`、`ProjectileID.Sets.*`、`Main.projFrames/projPet/projHook/projHostile`、`Player.ownedProjectileCounts`。
+- 卸载 Mod（`/reload` 或退出）时会自动注销其注册的弹幕。
 
 ---
 

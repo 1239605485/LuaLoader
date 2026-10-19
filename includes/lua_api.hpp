@@ -47,4 +47,7 @@ namespace lualoader::lua_api {
     /// 注销 handle 注册的所有自定义物品并释放回调引用
     void unregister_items(lua_mod_handle_t *handle);
 
+    /// 注销 handle 注册的所有自定义弹幕并释放回调引用
+    void unregister_projectiles(lua_mod_handle_t *handle);
+
 } // namespace lualoader::lua_api

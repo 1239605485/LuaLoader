@@ -514,6 +514,7 @@ namespace lualoader::lua_engine {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
         lua_api::unregister_items(handle);
+        lua_api::unregister_projectiles(handle);
         if (handle->L) {
             lua_close(handle->L);
             handle->L = nullptr;
