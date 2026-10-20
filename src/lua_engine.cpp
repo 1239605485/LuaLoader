@@ -22,7 +22,9 @@
 #include "mod_api.hpp"
 #include "lualoader_mod.h"
 
+#include <atomic>
 #include <cctype>
+#include <map>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -100,6 +102,78 @@ namespace lualoader::lua_engine {
     }
 #endif
 
+    // Preserve the search order and publish complete files without truncating mapped libraries.
+    static bool stage_native_libs(const std::vector<std::string> &src_dirs,
+                                  const std::string &dst_dir, const std::string &mod_id) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const auto failed = [&](const char *action) {
+            LOG_WARN("[mod {}] native staging {} failed: {}", mod_id, action, ec.message());
+            return false;
+        };
+        std::map<std::string, fs::path> sources;
+        for (const auto &dir: src_dirs) {
+            if (!fs::is_directory(dir, ec)) {
+                if (ec && ec != std::errc::no_such_file_or_directory && ec != std::errc::not_a_directory)
+                    return failed("scan");
+                continue;
+            }
+            fs::directory_iterator it(dir, ec), end;
+            if (ec) return failed("scan");
+            while (it != end) {
+                const bool regular = it->is_regular_file(ec);
+                if (ec) return failed("stat");
+                if (regular && it->path().extension() == ".so")
+                    sources.emplace(it->path().filename().string(), it->path()); // first match wins
+                it.increment(ec);
+                if (ec) return failed("scan");
+            }
+        }
+        fs::create_directories(dst_dir, ec);
+        if (ec) return failed("mkdir");
+        static std::atomic<unsigned long long> sequence{0};
+        fs::path temporary;
+        bool created = false;
+        for (int i = 0; i < 128 && !created; ++i) {
+            temporary = fs::path(dst_dir) / (".stage-" + std::to_string(++sequence));
+            created = fs::create_directory(temporary, ec);
+            if (ec) return failed("temporary directory");
+        }
+        if (!created) {
+            LOG_WARN("[mod {}] could not allocate native staging directory", mod_id);
+            return false;
+        }
+        struct Cleanup {
+            fs::path path;
+            ~Cleanup() { std::error_code ignored; fs::remove_all(path, ignored); }
+        } cleanup{temporary};
+        // Copy every chosen file before changing the loadable directory.
+        for (const auto &source: sources) {
+            fs::copy_file(source.second, temporary / source.first, ec);
+            if (ec) return failed("copy");
+        }
+        for (const auto &source: sources) {
+            // Android/POSIX rename replaces the directory entry, leaving old mappings intact.
+            fs::rename(temporary / source.first, fs::path(dst_dir) / source.first, ec);
+            if (ec) return failed("publish");
+        }
+        // A removed or renamed library must not be preloaded on the next launch.
+        fs::directory_iterator it(dst_dir, ec), end;
+        if (ec) return failed("prune scan");
+        while (it != end) {
+            const auto path = it->path();
+            const bool regular = it->is_regular_file(ec);
+            if (ec) return failed("prune stat");
+            if (regular && path.extension() == ".so" && !sources.count(path.filename().string())) {
+                fs::remove(path, ec);
+                if (ec) return failed("prune");
+            }
+            it.increment(ec);
+            if (ec) return failed("prune scan");
+        }
+        return true;
+    }
+
     /// 准备可加载的原生库目录：
     /// - Android：把各原生库复制到应用私有目录（规避 linker namespace 限制），返回该目录
     /// - 其它平台：直接返回原始目录
@@ -108,8 +182,6 @@ namespace lualoader::lua_engine {
                                                         const std::string &platform,
                                                         const std::string &arch,
                                                         const std::string &mod_id) {
-        namespace fs = std::filesystem;
-        std::error_code ec;
         std::vector<std::string> src_dirs = native_dirs(mod_dir, private_dir, platform, arch);
 #if defined(__ANDROID__)
         promote_self_global();
@@ -118,25 +190,8 @@ namespace lualoader::lua_engine {
         std::string safe_id = mod_id;
         for (char &c: safe_id) if (!isalnum((unsigned char) c) && c != '.' && c != '_' && c != '-') c = '_';
         const std::string dst_dir = base + "/lualoader_native/" + safe_id;
-        bool copied = false;
-        for (const auto &dir: src_dirs) {
-            if (!fs::is_directory(dir, ec)) continue;
-            for (const auto &entry: fs::directory_iterator(dir, ec)) {
-                if (!entry.is_regular_file()) continue;
-                if (entry.path().extension() != ".so") continue;
-                fs::create_directories(dst_dir, ec);
-                const std::string dst = dst_dir + "/" + entry.path().filename().string();
-                fs::copy_file(entry.path(), dst, fs::copy_options::overwrite_existing, ec);
-                if (ec) {
-                    LOG_WARN("[mod {}] 复制原生库失败: {} ({})", mod_id, entry.path().string(), ec.message());
-                } else {
-                    copied = true;
-                    LOG_INFO("[mod {}] 原生库已复制到私有目录: {}", mod_id, dst);
-                }
-            }
-        }
-        if (copied) return {dst_dir};
-        return src_dirs;
+        if (stage_native_libs(src_dirs, dst_dir, mod_id)) return {dst_dir};
+        return {}; // Never load stale cached libraries after staging fails.
 #else
         (void) mod_id;
         return src_dirs;
@@ -454,10 +509,9 @@ namespace lualoader::lua_engine {
         LOG_INFO("Running Lua entry: {}", entry_path);
         if (!run_file(L, entry_path, err)) {
             LOG_ERROR("Failed to run Lua mod {}: {}", handle->mod_id, err);
-            // 入口若已装上钩子，先卸载再关状态机，避免槽位残留/悬垂引用
-            lua_api::uninstall_all_hooks(handle);
-            lua_close(L);
-            handle->L = nullptr;
+            // Unregister item/projectile callbacks while their Lua state is still alive.
+            // Use the same cleanup order as a normal unload, including native libraries.
+            close(handle);
             return false;
         }
 
@@ -522,6 +576,7 @@ namespace lualoader::lua_engine {
         unload_native_libs(handle->native_libs);
         handle->init_ref = LUA_NOREF;
         handle->cleanup_ref = LUA_NOREF;
+        handle->gui_ref = LUA_NOREF;
     }
 
 } // namespace lualoader::lua_engine

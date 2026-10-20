@@ -1898,6 +1898,7 @@ namespace lualoader::lua_api {
 
     struct HookSlot {
         bool used{false};
+        uint64_t generation{0};
         lua_State *L{nullptr};
         lua_mod_handle_t *handle{nullptr};
         int prefix_ref{LUA_NOREF};
@@ -1908,9 +1909,11 @@ namespace lualoader::lua_api {
     };
 
     static HookSlot g_hook_slots[MAX_HOOK_SLOTS];
+    static uint64_t g_hook_generation = 0;
 
     struct HookUserdata {
         int slot;
+        uint64_t generation;
     };
 
     /// 钩子回调：先声明分发函数，再由宏生成固定签名的 C 入口
@@ -2003,7 +2006,11 @@ namespace lualoader::lua_api {
 
         const bool skip = lua_toboolean(L, -2) != 0;
         if (skip && result && sig && sig->return_type != PATCH_VOID && !lua_isnil(L, -1)) {
-            read_patch_value(L, -1, sig->return_type, result);
+            if (!try_read_patch_value(L, -1, sig->return_type, result)) {
+                LOG_ERROR("[lua] prefix hook returned an invalid result; running original method");
+                lua_settop(L, base);
+                return false;
+            }
         }
         lua_settop(L, base);
         return skip;
@@ -2029,7 +2036,9 @@ namespace lualoader::lua_api {
         if (s.override_result) {
             if (pcall_log(L, 3, 1, "postfix hook") == LUA_OK) {
                 if (result && sig && sig->return_type != PATCH_VOID && !lua_isnil(L, -1)) {
-                    read_patch_value(L, -1, sig->return_type, result);
+                    if (!try_read_patch_value(L, -1, sig->return_type, result)) {
+                        LOG_ERROR("[lua] postfix hook returned an invalid result; keeping original result");
+                    }
                 }
             }
         } else {
@@ -2066,6 +2075,7 @@ namespace lualoader::lua_api {
         for (int i = 0; i < MAX_HOOK_SLOTS; ++i) {
             if (!g_hook_slots[i].used) {
                 g_hook_slots[i].used = true;
+                g_hook_slots[i].generation = ++g_hook_generation;
                 return i;
             }
         }
@@ -2130,6 +2140,7 @@ namespace lualoader::lua_api {
 
         auto *ud = static_cast<HookUserdata *>(lua_newuserdatauv(L, sizeof(HookUserdata), 0));
         ud->slot = slot;
+        ud->generation = s.generation;
         luaL_getmetatable(L, HOOK_METATABLE);
         lua_setmetatable(L, -2);
         return 1;
@@ -2138,7 +2149,11 @@ namespace lualoader::lua_api {
     static int l_hook_remove(lua_State *L) {
         auto *ud = static_cast<HookUserdata *>(luaL_checkudata(L, 1, HOOK_METATABLE));
         if (ud->slot >= 0) {
-            release_slot(ud->slot);
+            // A removed hook's Lua userdata may survive after its slot is reused.
+            if (ud->slot < MAX_HOOK_SLOTS &&
+                g_hook_slots[ud->slot].generation == ud->generation) {
+                release_slot(ud->slot);
+            }
             ud->slot = -1;
         }
         return 0;
@@ -2304,7 +2319,7 @@ namespace lualoader::lua_api {
             lua_State *L = e->L;
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
             push_handle(L, inst);
-            if (pcall_log(L, 1, 0, "mod.item.defaults") != LUA_OK) lua_pop(L, 1);
+            pcall_log(L, 1, 0, "mod.item.defaults"); // pcall_log already consumes errors
         }
     }
 
@@ -2318,7 +2333,6 @@ namespace lualoader::lua_api {
         push_handle(L, item);
         lua_pushboolean(L, ignore_cursed);
         if (pcall_log(L, 3, 1, "mod.item.can_use") != LUA_OK) {
-            lua_pop(L, 1);
             return true;
         }
         const bool r = lua_toboolean(L, -1) != 0;
@@ -2830,7 +2844,7 @@ namespace lualoader::lua_api {
             lua_State *L = e->L;
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
             push_handle(L, inst);
-            if (pcall_log(L, 1, 0, "mod.projectile.defaults") != LUA_OK) lua_pop(L, 1);
+            pcall_log(L, 1, 0, "mod.projectile.defaults");
         }
     }
 
@@ -2841,7 +2855,7 @@ namespace lualoader::lua_api {
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->ai_ref);
         push_handle(L, inst);
-        if (pcall_log(L, 1, 0, "mod.projectile.ai") != LUA_OK) lua_pop(L, 1);
+        pcall_log(L, 1, 0, "mod.projectile.ai");
     }
 
     static patch_handle_t lua_projectile_get_texture(terraria_projectile_handle_t *current) {
