@@ -22,12 +22,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ---------- 禁止 example/examples 目录 ----------
+      # ---------- 禁止仓库根目录下的 example/examples 目录 ----------
       - name: Check for forbidden example directories
         shell: bash
         run: |
           found=0
-          for p in "LuaLoader/example" "LuaLoader/examples"; do
+          for p in "example" "examples"; do
             if [ -e "$p" ]; then
               echo "::error file=$p::检测到禁止的目录: $p"
               found=1
@@ -36,20 +36,20 @@ jobs:
           if [ "$found" -eq 1 ]; then
             echo ""
             echo "=========================================="
-            echo "错误：检测到 LuaLoader/example 或 LuaLoader/examples 目录。"
+            echo "错误：检测到仓库根目录下的 example 或 examples 目录。"
             echo "请勿在仓库中提交示例目录，改用文档（docs/）来说明用法。"
             echo "相关目录应删除或迁移到文档中。"
             echo "=========================================="
             exit 1
           fi
-          echo "检查通过：未发现 example/examples 目录。"
+          echo "检查通过：未发现根目录 example/examples 目录。"
 
-      # ---------- 禁止 test/tests 目录 ----------
+      # ---------- 禁止仓库根目录下的 test/tests 目录 ----------
       - name: Check for forbidden test directories
         shell: bash
         run: |
           found=0
-          for p in "LuaLoader/test" "LuaLoader/tests"; do
+          for p in "test" "tests"; do
             if [ -e "$p" ]; then
               echo "::error file=$p::检测到禁止的目录: $p"
               found=1
@@ -58,12 +58,12 @@ jobs:
           if [ "$found" -eq 1 ]; then
             echo ""
             echo "=========================================="
-            echo "错误：检测到 LuaLoader/test 或 LuaLoader/tests 目录。"
+            echo "错误：检测到仓库根目录下的 test 或 tests 目录。"
             echo "请清理临时测试内容，勿将测试目录提交到仓库。"
             echo "=========================================="
             exit 1
           fi
-          echo "检查通过：未发现 test/tests 目录。"
+          echo "检查通过：未发现根目录 test/tests 目录。"
 
       # ---------- 下载 TEFKernel ----------
       - name: Cache TEFKernel
