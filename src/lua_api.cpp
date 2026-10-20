@@ -2326,6 +2326,21 @@ namespace lualoader::lua_api {
         return r;
     }
 
+    /// PNG 是直通 alpha（straight alpha），而 Terraria 的混合状态按
+    /// **预乘 alpha**（premultiplied，BlendState.AlphaBlend: SrcBlend=One）
+    /// 处理。不预乘的话，半透明像素（光效/描边/阴影）会被画成不透明的
+    /// 亮色。上传前把 RGB 乘以 alpha，与原版内容管线一致。
+    static void premultiply_alpha(unsigned char *buf, const size_t sz) {
+        for (size_t i = 0; i + 3 < sz; i += 4) {
+            const unsigned a = buf[i + 3];
+            if (a < 255) {
+                buf[i]     = static_cast<unsigned char>((buf[i]     * a + 127) / 255);
+                buf[i + 1] = static_cast<unsigned char>((buf[i + 1] * a + 127) / 255);
+                buf[i + 2] = static_cast<unsigned char>((buf[i + 2] * a + 127) / 255);
+            }
+        }
+    }
+
     static patch_handle_t lua_item_get_texture(terraria_item_handle_t *current) {
         LuaItemEntry *e = item_from_handle(current);
         if (!e) return PATCH_NULL;
@@ -2348,6 +2363,7 @@ namespace lualoader::lua_api {
 #else
         std::memcpy(buf, e->tex_pixels.data(), sz);
 #endif
+        premultiply_alpha(buf, sz);
         const patch_handle_t tex =
                 terraria_texture2d_create(e->tex_w, e->tex_h, TEXTURE_FORMAT_RGBA32, buf, sz);
         free(buf);
@@ -2547,6 +2563,19 @@ namespace lualoader::lua_api {
         lua_pop(L, 1);
         lua_getfield(L, 1, "sacrifice");
         e->item.sacrifice_count = static_cast<int>(luaL_optinteger(L, -1, 0));
+        lua_pop(L, 1);
+
+        // animation = { ticks = 8, frames = 9 }：竖向帧图动画（DrawAnimationVertical）
+        lua_getfield(L, 1, "animation");
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "ticks");
+            e->item.anim_ticks = static_cast<int>(luaL_optinteger(L, -1, 8));
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "frames");
+            e->item.anim_frames = static_cast<int>(luaL_optinteger(L, -1, 0));
+            lua_pop(L, 1);
+            if (e->item.anim_frames < 0) e->item.anim_frames = 0;
+        }
         lua_pop(L, 1);
 
         // defaults：表格（声明式）或函数
@@ -2837,6 +2866,7 @@ namespace lualoader::lua_api {
 #else
         std::memcpy(buf, e->tex_pixels.data(), sz);
 #endif
+        premultiply_alpha(buf, sz);
         const patch_handle_t tex =
                 terraria_texture2d_create(e->tex_w, e->tex_h, TEXTURE_FORMAT_RGBA32, buf, sz);
         free(buf);
@@ -2885,6 +2915,12 @@ namespace lualoader::lua_api {
         lua_getfield(L, 1, "vanilla_ai");
         const bool vanilla_ai = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
+
+        // frames：竖向帧图帧数（写进 Main.projFrames[type]；0 = 单帧整图）
+        lua_getfield(L, 1, "frames");
+        e->projectile.frames = static_cast<int>(luaL_optinteger(L, -1, 0));
+        lua_pop(L, 1);
+        if (e->projectile.frames < 0) e->projectile.frames = 0;
 
         // defaults：表格（声明式）或函数
         lua_getfield(L, 1, "defaults");

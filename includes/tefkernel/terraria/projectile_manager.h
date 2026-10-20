@@ -60,6 +60,7 @@ typedef struct terraria_projectile_handle_t {
     int runtime_id;                   //<< 由内核分配
     bool no_ai_hook;                  //<< true = 不接管 AI（沿用原版 aiStyle）
     bool ai_after_vanilla;            //<< true = 原版 AI 先执行，再调用扩展 ai 回调
+    int frames;                       //<< 帧图帧数（Main.projFrames[type]）；0 = 单帧整图
     terraria_projectile_ops_t projectile_ops;
 } terraria_projectile_handle_t;
 

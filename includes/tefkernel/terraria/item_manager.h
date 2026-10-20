@@ -89,6 +89,9 @@ typedef struct terraria_item_handle_t {
     bool has_tooltip; //<< 是否存在物品介绍
     int sacrifice_count; //<< 研究所需数量
     int runtime_id;  //<< 由内核分配
+    int anim_ticks;  //<< 帧动画：每帧 tick 数（0 = 不动画）
+    int anim_frames; //<< 帧动画：帧数（竖向帧图）
+    bool anim_registered; //<< 内部：已向游戏注册动画
 
     terraria_item_ops_t item_ops; //<< 内部逻辑
 } terraria_item_handle_t;

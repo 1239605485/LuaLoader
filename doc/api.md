@@ -533,6 +533,7 @@ mod.item.register{
 | `can_use` | function | 可选。`function(player, item, ignore_cursed) -> bool`，返回 `false` 时不可使用 |
 | `language` | table | `{ <语言> = { name = ..., tooltip = ... } }`。语言键可用 `en`/`zh`/`ja`… 或游戏文化名；也接受数字（见内核 `language_culture_t`） |
 | `recipe` | table | `{ result = 数量, materials = { { id = , count = }, ... }, station = 物块ID }`；`station = -1` 表示无需合成站 |
+| `animation` | table | 帧图动画：`{ ticks = 每帧tick数, frames = 帧数 }`。`texture` 必须是**竖向帧图**（高度能被帧数整除），内核注册 `DrawAnimationVertical`；游戏清空动画表后会自动重注册 |
 
 语言键：`en`、`de`、`it`、`fr`、`es`、`ru`、`zh`(简体)、`pt`、`pl`、`ja`、`ko`、`zh-tw`(繁体)。
 
@@ -575,6 +576,7 @@ mod.projectile.register{
     texture  = "orb.png",              -- PNG，见 mod.item 的“贴图”一节
     no_ai    = false,                  -- true = 不接管 AI，沿用原版 aiStyle
     vanilla_ai = false,                -- true = 原版 AI 先跑，再调用 ai（不跳过原版）
+    frames   = 0,                      -- 竖向帧图帧数（写 Main.projFrames[type]；0 = 单帧整图）
     defaults = {                       -- Projectile 字段默认值（表或 function(projectile)）
         width = 16, height = 16,
         damage = 18, knockBack = 2.0, timeLeft = 300, penetrate = 1,
@@ -597,6 +599,7 @@ mod.projectile.register{
 | `texture` | string | PNG 相对路径；不放则用内核占位贴图 |
 | `no_ai` | bool | 默认 `false`。`true` 表示不接管 AI，沿用 `defaults` 里的 `aiStyle` |
 | `vanilla_ai` | bool | 默认 `false`。`true` 表示**先执行原版 AI（aiStyle）再调用 `ai`**，只补原版没有的逻辑；不能再假设位移归你管 |
+| `frames` | int | 竖向帧图帧数，内核写进 `Main.projFrames[type]`；`0` = 单帧整图。帧图贴图高度必须能被帧数整除。配合 `mod.quickapi.projectile_animate(p, ticks)` 在 `ai` 里每帧推进 |
 | `defaults` | table / function | `Projectile` 字段默认值。函数形式收到的是**非托管句柄**，需用 `mod.patch.set_field_value` 写（见“字段读写”） |
 | `ai` | function | 可选。`function(projectile) end`，每帧调用。默认**写了就跳过原版 AI**；配合 `vanilla_ai = true` 则改为原版执行完再调用 |
 
