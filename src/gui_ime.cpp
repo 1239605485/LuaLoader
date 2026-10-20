@@ -107,10 +107,9 @@ namespace lualoader::gui::ime {
 
     void close() {
         resolve();
-        if (!patchlib_is_valid(g_kb)) {
-            g_kb = PATCH_NULL;
-            return;
-        }
+        /* g_kb 为 null 是正常状态（例如没有打开系统输入法）；
+         * 不要用 patchlib_is_valid 做空值判断，否则每帧 render close 会刷 WARN。 */
+        if (!g_kb) return;
         if (patchlib_is_valid(m_set_active)) {
             bool active = false;
             void *a[1] = {&active};
