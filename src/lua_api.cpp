@@ -591,10 +591,23 @@ namespace lualoader::lua_api {
         free(c);
     }
 
+    /// 非静态字段必须给 instance。
+    /// 否则 Android 上 patchlib_field_get_pointer 会算出 NULL + offset（例如 0x12f），
+    /// 解引用就是 SIGSEGV；桌面端会抛托管空引用异常。
+    static bool instance_missing(lua_State *L, const int idx, const patch_handle_t field) {
+        /* 不能只看 Lua 的 nil：已 free 的 OwnedHandle、table、用户数据等
+         * 也都不是有效实例，to_handle 会返回 nullptr。 */
+        return to_handle(L, idx) == nullptr && !patchlib_field_is_static(field);
+    }
+
     static int l_patch_field_get_value(lua_State *L) {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (instance_missing(L, 2, field)) {
+            lua_pushnil(L);
+            return 1;
+        }
         if (is_string_type_arg(L, 3)) {
             push_managed_string(L, read_field_object(field, instance));
             return 1;
@@ -620,6 +633,7 @@ namespace lualoader::lua_api {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (instance_missing(L, 2, field)) return 0;
         if (is_string_type_arg(L, 4)) {
             const char *s = luaL_checkstring(L, 3);
             const patch_handle_t str = patchlib_string_create(s);
@@ -868,6 +882,11 @@ namespace lualoader::lua_api {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (instance_missing(L, 2, field)) {
+            lua_pushnil(L);
+            lua_pushnil(L);
+            return 2;
+        }
         float v[2] = {0.0f, 0.0f};
         if (!read_field_bytes(field, instance, v, sizeof(v))) {
             lua_pushnil(L);
@@ -884,6 +903,7 @@ namespace lualoader::lua_api {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (instance_missing(L, 2, field)) return 0;
         const float v[2] = {
                 static_cast<float>(luaL_checknumber(L, 3)),
                 static_cast<float>(luaL_checknumber(L, 4)),
@@ -900,6 +920,10 @@ namespace lualoader::lua_api {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (instance_missing(L, 2, field)) {
+            lua_pushnil(L);
+            return 1;
+        }
 
         size_t size;
         if (lua_isnoneornil(L, 3)) {
@@ -927,6 +951,7 @@ namespace lualoader::lua_api {
         const patch_handle_t field = to_handle(L, 1);
         const patch_handle_t instance = to_handle(L, 2);
         if (!field) return luaL_error(L, "invalid field handle");
+        if (instance_missing(L, 2, field)) return 0;
         size_t len = 0;
         const char *data = luaL_checklstring(L, 3, &len);
         if (len == 0 || len > 16) {
@@ -946,32 +971,42 @@ namespace lualoader::lua_api {
         return 1;
     }
 
+    /// 数组元素真实大小（未知按指针大小；上限 1MB 防止异常数组）
+    static size_t array_element_bytes(const patch_handle_t array) {
+        size_t n = patchlib_array_element_size(array);
+        if (n == 0) n = sizeof(void *);
+        if (n > (1u << 20)) n = (1u << 20);
+        return n;
+    }
+
     /// 数组取元素。第三个参数为元素类型名，省略时按对象(指针)处理。
     static int l_patch_array_at(lua_State *L) {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
-        uint64_t buffer = 0;
-        if (!patchlib_array_at(array, index, &buffer)) {
+        /* 关键：内核按元素真实大小 memcpy，缓冲必须够大（原来固定 8 字节会写穿栈） */
+        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        void *buffer = storage.data();
+        if (!patchlib_array_at(array, index, buffer)) {
             lua_pushnil(L);
             return 1;
         }
         if (lua_isnoneornil(L, 3)) {
-            void *ptr = *reinterpret_cast<void **>(&buffer);
+            void *ptr = *static_cast<void **>(buffer);
             if (ptr) lua_pushlightuserdata(L, ptr);
             else lua_pushnil(L);
             return 1;
         }
         const char *type_name = luaL_checkstring(L, 3);
         if (std::strcmp(type_name, "string") == 0) {
-            push_managed_string(L, *reinterpret_cast<void **>(&buffer));
+            push_managed_string(L, *static_cast<void **>(buffer));
             return 1;
         }
         patch_type_t type;
         if (!type_from_name(type_name, &type)) {
             return luaL_error(L, "unknown type name: %s", type_name);
         }
-        push_patch_value(L, type, &buffer);
+        push_patch_value(L, type, buffer);
         return 1;
     }
 
@@ -1009,7 +1044,7 @@ namespace lualoader::lua_api {
                     owned.push_back(s);
                     *static_cast<void **>(out) = s;
                 } else {
-                    *static_cast<void **>(out) = lua_touserdata(L, val_idx);
+                    *static_cast<void **>(out) = to_handle(L, val_idx);
                 }
                 return;
             }
@@ -1026,10 +1061,11 @@ namespace lualoader::lua_api {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
-        uint64_t buffer = 0;
+        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        void *buffer = storage.data();
         std::vector<patch_handle_t> owned;
-        read_element(L, 3, 4, &buffer, owned);
-        const bool ok = patchlib_array_set(array, index, &buffer);
+        read_element(L, 3, 4, buffer, owned);
+        const bool ok = patchlib_array_set(array, index, buffer);
         for (const patch_handle_t h: owned) patchlib_free(h);
         lua_pushboolean(L, ok);
         return 1;
@@ -1039,10 +1075,11 @@ namespace lualoader::lua_api {
     static int l_patch_array_fill(lua_State *L) {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
-        uint64_t buffer = 0;
+        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        void *buffer = storage.data();
         std::vector<patch_handle_t> owned;
-        read_element(L, 2, 3, &buffer, owned);
-        const bool ok = patchlib_array_fill(array, &buffer);
+        read_element(L, 2, 3, buffer, owned);
+        const bool ok = patchlib_array_fill(array, buffer);
         for (const patch_handle_t h: owned) patchlib_free(h);
         lua_pushboolean(L, ok);
         return 1;
@@ -1051,7 +1088,10 @@ namespace lualoader::lua_api {
     /// mod.patch.array_create(size, elem_type) -> 数组句柄（GC 托管）
     /// elem_type 可为类型句柄、基础类型名（"int32"/"float"...）或类型全名
     static int l_patch_array_create(lua_State *L) {
-        const size_t size = static_cast<size_t>(luaL_checkinteger(L, 1));
+        const lua_Integer size_in = luaL_checkinteger(L, 1);
+        if (size_in < 0 || size_in > (1 << 20))
+            return luaL_error(L, "array size out of range (0..1048576)");
+        const size_t size = static_cast<size_t>(size_in);
         patch_handle_t elem_type = nullptr;
         if (lua_type(L, 2) == LUA_TLIGHTUSERDATA) {
             elem_type = to_handle(L, 2);
@@ -1071,14 +1111,14 @@ namespace lualoader::lua_api {
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
         const size_t size = static_cast<size_t>(luaL_checkinteger(L, 3));
-        if (size == 0 || size > 64) return luaL_error(L, "bad size (1..64)");
-        unsigned char buf[64];
-        std::memset(buf, 0, size);
-        if (!patchlib_array_at(array, index, buf)) {
+        const size_t elem = array_element_bytes(array);
+        if (size == 0 || size > elem) return luaL_error(L, "bad size (1..%d)", (int) elem);
+        std::vector<unsigned char> buf(elem, 0);
+        if (!patchlib_array_at(array, index, buf.data())) {
             lua_pushnil(L);
             return 1;
         }
-        lua_pushlstring(L, reinterpret_cast<const char *>(buf), size);
+        lua_pushlstring(L, reinterpret_cast<const char *>(buf.data()), size);
         return 1;
     }
 
@@ -1089,10 +1129,11 @@ namespace lualoader::lua_api {
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
         size_t len = 0;
         const char *data = luaL_checklstring(L, 3, &len);
-        if (len == 0 || len > 64) return luaL_error(L, "bad size (1..64)");
-        unsigned char buf[64];
-        std::memcpy(buf, data, len);
-        lua_pushboolean(L, patchlib_array_set(array, index, buf));
+        const size_t elem = array_element_bytes(array);
+        if (len == 0 || len > elem) return luaL_error(L, "bad size (1..%d)", (int) elem);
+        std::vector<unsigned char> buf(elem, 0);
+        std::memcpy(buf.data(), data, len);
+        lua_pushboolean(L, patchlib_array_set(array, index, buf.data()));
         return 1;
     }
 
@@ -1695,12 +1736,24 @@ namespace lualoader::lua_api {
     /// 仅 Android 暴露（原生字段真实指针）；桌面端返回 nil
     static int l_patch_field_pointer(lua_State *L) {
 #if defined(__ANDROID__)
-        void *p = patchlib_field_get_pointer(to_handle(L, 1), to_handle(L, 2));
+        const patch_handle_t f = to_handle(L, 1);
+        if (!f || instance_missing(L, 2, f)) { lua_pushnil(L); return 1; }
+        void *p = patchlib_field_get_pointer(f, to_handle(L, 2));
         if (p) lua_pushlightuserdata(L, p); else lua_pushnil(L);
 #else
         (void) L;
         lua_pushnil(L);
 #endif
+        return 1;
+    }
+
+    /// mod.patch.field_is_reference(field) -> bool
+    /// true 表示该字段是托管引用（数组/对象/字符串）；
+    /// false 表示内联值类型（PE 上 Projectile.ai / localAI 就属于这种）。
+    static int l_patch_field_is_reference(lua_State *L) {
+        const patch_handle_t f = to_handle(L, 1);
+        if (!f) { lua_pushboolean(L, 0); return 1; }
+        lua_pushboolean(L, patchlib_field_get_type(f) == PATCH_OBJECT);
         return 1;
     }
 
@@ -2108,6 +2161,7 @@ namespace lualoader::lua_api {
             {"get_field_vec2", l_patch_field_get_vec2},
             {"set_field_vec2", l_patch_field_set_vec2},
             {"get_field_raw", l_patch_field_get_raw},
+            {"field_is_reference", l_patch_field_is_reference},
             {"set_field_raw", l_patch_field_set_raw},
             {"array_length", l_patch_array_length},
             {"array_at", l_patch_array_at},
@@ -2827,6 +2881,11 @@ namespace lualoader::lua_api {
         const bool no_ai = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
 
+        // vanilla_ai：true = 原版 AI 先执行，再调用 ai 回调
+        lua_getfield(L, 1, "vanilla_ai");
+        const bool vanilla_ai = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+
         // defaults：表格（声明式）或函数
         lua_getfield(L, 1, "defaults");
         if (lua_isfunction(L, -1)) {
@@ -2872,6 +2931,8 @@ namespace lualoader::lua_api {
         }
         if (no_ai && e->ai_ref != LUA_NOREF)
             LOG_WARN("[mod.projectile] {}: 同时给了 no_ai 和 ai，ai 不会生效", proj_name);
+        if (no_ai && vanilla_ai)
+            LOG_WARN("[mod.projectile] {}: no_ai 与 vanilla_ai 冲突，已按 no_ai 处理", proj_name);
 
         // texture
         lua_getfield(L, 1, "texture");
@@ -2889,6 +2950,7 @@ namespace lualoader::lua_api {
         e->projectile.internal_name = e->name.c_str();
         e->projectile.runtime_id = -1;
         e->projectile.no_ai_hook = no_ai;
+        e->projectile.ai_after_vanilla = vanilla_ai;
         e->projectile.projectile_ops.early_init = nullptr;
         e->projectile.projectile_ops.init_static = nullptr;
         e->projectile.projectile_ops.set_defaults = lua_projectile_set_defaults;

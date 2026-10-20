@@ -83,7 +83,9 @@ DEFINE_FUNCTION(bool, patchlib_array_empty, patch_handle_t array);
  * @param array 数组实例
  * @return 数组长度
  */
-DEFINE_FUNCTION(size_t, patchlib_array_length, patch_handle_t array);
+DEFINE_FUNCTION(size_t, patchlib_array_length, patch_handle_t array)
+
+DEFINE_FUNCTION(size_t, patchlib_array_element_size, patch_handle_t array);
 
 /**
  * @brief 从 C 数组复制到 IL2CPP 数组

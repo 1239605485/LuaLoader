@@ -574,6 +574,7 @@ mod.projectile.register{
     name     = "lua_orb",              -- 内部名（必填，同 Mod 内唯一）
     texture  = "orb.png",              -- PNG，见 mod.item 的“贴图”一节
     no_ai    = false,                  -- true = 不接管 AI，沿用原版 aiStyle
+    vanilla_ai = false,                -- true = 原版 AI 先跑，再调用 ai（不跳过原版）
     defaults = {                       -- Projectile 字段默认值（表或 function(projectile)）
         width = 16, height = 16,
         damage = 18, knockBack = 2.0, timeLeft = 300, penetrate = 1,
@@ -595,8 +596,9 @@ mod.projectile.register{
 | `name` | string | **必填**。内部名，与 Mod id 一起构成存档键 |
 | `texture` | string | PNG 相对路径；不放则用内核占位贴图 |
 | `no_ai` | bool | 默认 `false`。`true` 表示不接管 AI，沿用 `defaults` 里的 `aiStyle` |
+| `vanilla_ai` | bool | 默认 `false`。`true` 表示**先执行原版 AI（aiStyle）再调用 `ai`**，只补原版没有的逻辑；不能再假设位移归你管 |
 | `defaults` | table / function | `Projectile` 字段默认值。函数形式收到的是**非托管句柄**，需用 `mod.patch.set_field_value` 写（见“字段读写”） |
-| `ai` | function | 可选。`function(projectile) end`，每帧调用。**写了就跳过原版 AI** |
+| `ai` | function | 可选。`function(projectile) end`，每帧调用。默认**写了就跳过原版 AI**；配合 `vanilla_ai = true` 则改为原版执行完再调用 |
 
 ### ⚠ 写了 `ai` 就要自己算位移
 
@@ -618,6 +620,27 @@ end
 
 `timeLeft`、命中判定（`Damage()`）等仍由原版 `Update()` 负责，不用自己写。
 想沿用原版移动/AI：不要写 `ai`（或 `no_ai = true`），只填 `defaults` 里的 `aiStyle`。
+
+### 用原版 `aiStyle` + 少量 Lua 补充
+
+不想手抄原版物理时，可以两层都用：
+
+```lua
+vanilla_ai = true,
+defaults = { aiStyle = 1, tileCollide = true, ... },
+ai = function(p)
+    -- 原版 AI 已经跑完：这里只补它没做的事
+    -- 例如拾取、Buff、额外重力（原版 AI_001 的重力只对部分 type 生效）
+end,
+```
+
+内核的处理顺序：
+
+| 模式 | 执行顺序 |
+|---|---|
+| 默认（`ai`） | 只调用 `ai`，跳过原版 `Projectile.AI()` |
+| `vanilla_ai = true` | 先执行原版 `Projectile.AI()`，再调用 `ai` |
+| `no_ai = true` | 只执行原版 `Projectile.AI()`，不调用 `ai` |
 
 ### 说明
 
