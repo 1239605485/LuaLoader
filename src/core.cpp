@@ -72,6 +72,14 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
         return ML_ERROR_INVALID_PARAM;
     }
 
+    // Loading an existing ID must not execute another state that emplace would discard.
+    // Explicit reload_mod remains the path for replacing a running Mod.
+    const std::string mod_id = mod_manifest->mod_id ? mod_manifest->mod_id : "";
+    if (lua_mod_handles.find(mod_id) != lua_mod_handles.end()) {
+        LOG_WARN("Lua mod already loaded: {}", mod_id);
+        return ML_SUCCESS;
+    }
+
     LOG_INFO("Starting to load Lua mod: mod_id={}, path={}, private_dir={}",
              mod_manifest->mod_id ? mod_manifest->mod_id : "(null)",
              mod_manifest->path,
@@ -101,7 +109,9 @@ ml_result_t lualoader::core::load_mod(mod_manifest_t *mod_manifest) {
         const bool multiplayer_safe = json_data.value("multiplayer_safe", true);
 
         std::string err;
-        if (!lua_engine::load(handle, config_path.string(), mod_manifest->private_dir, err)) {
+        const std::string private_dir = mod_manifest->private_dir
+                ? mod_manifest->private_dir : config_path.parent_path().string();
+        if (!lua_engine::load(handle, config_path.string(), private_dir, err)) {
             LOG_ERROR("Failed to load Lua mod {}: {}", handle->mod_id, err);
             // load 失败时可能已预加载原生库，必须 close 以释放（否则句柄泄漏/残留）
             lua_engine::close(handle);
