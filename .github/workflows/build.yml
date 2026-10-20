@@ -44,6 +44,27 @@ jobs:
           fi
           echo "检查通过：未发现 example/examples 目录。"
 
+      # ---------- 禁止 test/tests 目录 ----------
+      - name: Check for forbidden test directories
+        shell: bash
+        run: |
+          found=0
+          for p in "LuaLoader/test" "LuaLoader/tests"; do
+            if [ -e "$p" ]; then
+              echo "::error file=$p::检测到禁止的目录: $p"
+              found=1
+            fi
+          done
+          if [ "$found" -eq 1 ]; then
+            echo ""
+            echo "=========================================="
+            echo "错误：检测到 LuaLoader/test 或 LuaLoader/tests 目录。"
+            echo "请清理临时测试内容，勿将测试目录提交到仓库。"
+            echo "=========================================="
+            exit 1
+          fi
+          echo "检查通过：未发现 test/tests 目录。"
+
       # ---------- 下载 TEFKernel ----------
       - name: Cache TEFKernel
         id: cache-tefkernel
