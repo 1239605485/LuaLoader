@@ -6,6 +6,7 @@
 #include "json.hpp"
 #include <cmath>
 #include <array>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
@@ -30,6 +31,7 @@ namespace {
 State state;
 #if defined(__ANDROID__) && defined(__aarch64__)
 void invalidate(const std::string& key,bool removing=false);
+void refresh_modules();
 #endif
 std::filesystem::path storage;
 bool ready=false;
@@ -59,13 +61,20 @@ int add(lua_State* L){
     if(state.actions.count(key))return luaL_error(L,"control already registered: %s",id.c_str());
     if(state.actions.size()>=256)return luaL_error(L,"native control registry is full");
     state.actions.emplace(key,Action{key,h->mod_id,id,name});
+#if defined(__ANDROID__) && defined(__aarch64__)
+    refresh_modules();
+#endif
     lua_pushlstring(L,id.data(),id.size());return 1;
 }
 int remove(lua_State* L){auto key=own_key(L);
 #if defined(__ANDROID__) && defined(__aarch64__)
     invalidate(key,true);
 #endif
-    lua_pushboolean(L,state.actions.erase(key)!=0);return 1;}
+    const bool removed=state.actions.erase(key)!=0;
+#if defined(__ANDROID__) && defined(__aarch64__)
+    if(removed)refresh_modules();
+#endif
+    lua_pushboolean(L,removed);return 1;}
 
 int down(lua_State* L){auto a=state.find(own_key(L));lua_pushboolean(L,a&&a->held&&a->enabled&&a->visible);return 1;}
 int edge(lua_State* L,bool press){auto a=state.find(own_key(L));bool hit=false;
@@ -92,7 +101,7 @@ struct Api {
  H slot_id{},slot_style{},slot_kind{},slot_multi{},active_control{},active_slot{},action_binding{},display_options{};
  H gui_active{},gui_edit{},edit_enabled{},gui_editor{},gui_runtime{},ui_open{};
  H manager_instance{},cursor_id{},cursor_pos{},cursor_down{},cursor_old{},cursor_ignore{},cursor_world{};
- H rect{},text{},get_region{},adjust{},count{},at{},update_value{},close_options{},add_undo{},has_undo{},has_redo{};
+ H rect{},text{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
 } api;
 std::vector<patch_hook_id_t> hooks;
 unsigned long long tick=0;
@@ -108,6 +117,8 @@ Rect popup_rect;
 unsigned popup_epoch=0;
 unsigned long long popup_tick=0;
 int popup_page=0;
+std::vector<std::string> module_ids;
+int popup_module=0;
 H popup_owner=nullptr;
 std::string popup_context;
 std::optional<Choice> selected;
@@ -174,13 +185,59 @@ void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=rea
 }
 Rect region(H layout){using Fn=Rect(*)(void*);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.get_region));return fn&&layout?fn(layout):Rect{};}
 void clear_input(){claims.clear();regions.clear();state.reset_input();}
+std::string module_title(const std::string& id){
+    std::vector<std::string> parts;size_t start=0;
+    while(start<=id.size()){
+        const size_t end=id.find('.',start);
+        parts.push_back(id.substr(start,end==std::string::npos?std::string::npos:end-start));
+        if(end==std::string::npos)break;
+        start=end+1;
+    }
+    if(parts.size()>=3)parts.erase(parts.begin());
+    if(parts.size()>1){
+        auto tail=parts.back();std::transform(tail.begin(),tail.end(),tail.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
+        if(tail=="probe"||tail=="diagnostic"||tail=="debug"||tail=="test")parts.pop_back();
+    }
+    std::string label;
+    for(const auto& part:parts){
+        if(!label.empty())label+=' ';
+        bool capitalize=true;
+        for(unsigned char c:part){
+            if(c=='_'||c=='-'){label+=' ';capitalize=true;continue;}
+            label+=capitalize?static_cast<char>(std::toupper(c)):static_cast<char>(c);
+            capitalize=false;
+        }
+    }
+    return label.empty()?id:label;
+}
+void refresh_modules(){
+    const std::string current=module_ids.empty()||popup_module<0||static_cast<size_t>(popup_module)>=module_ids.size()?std::string{}:module_ids[popup_module];
+    std::set<std::string> owners;for(const auto& [key,a]:state.actions)owners.insert(a.owner);
+    module_ids.assign(owners.begin(),owners.end());
+    auto it=std::find(module_ids.begin(),module_ids.end(),current);
+    popup_module=it==module_ids.end()?0:static_cast<int>(it-module_ids.begin());
+    if(module_ids.empty())popup_page=0;
+}
+int module_action_count(const std::string& owner){
+    int count=0;for(const auto& [key,a]:state.actions)if(a.owner==owner)++count;return count;
+}
 void popup_closed(H obj,void**,void*,const patch_method_signature_t*){
     if(obj!=popup_owner)return;
     rows.clear();selected.reset();popup_owner=nullptr;popup_context.clear();popup_tick=0;++popup_epoch;
 }
 void close_popup(H obj){call(api.close_options,obj);rows.clear();selected.reset();popup_owner=nullptr;popup_context.clear();++popup_epoch;}
 void choose(H obj,Choice choice){
-    if(choice.kind==3){popup_page=std::max(0,popup_page+choice.value);++popup_epoch;return;}
+    if(choice.kind==3){
+        if(module_ids.empty())return;
+        const int count=module_action_count(module_ids[popup_module]);
+        const int pages=std::max(1,(count+3)/4);
+        popup_page=std::clamp(popup_page+choice.value,0,pages-1);++popup_epoch;return;
+    }
+    if(choice.kind==4){
+        if(module_ids.size()<2)return;
+        const int count=static_cast<int>(module_ids.size());
+        popup_module=(popup_module+choice.value+count)%count;popup_page=0;++popup_epoch;return;
+    }
     if(choice.kind!=2||!state.find(choice.key))return;
     auto slot=active_slot(),p=profile_key();if(slot.empty()||p.empty())return;
     auto edit=edit_object();if(edit)call(api.add_undo,edit); // participates in native undo/redo
@@ -190,6 +247,12 @@ void choose(H obj,Choice choice){
     selecting=false;
     state.bindings[p][slot]=choice.key;
     close_popup(obj);
+}
+bool popup_hover_prefix(H obj,void** args,const patch_method_signature_t*,void* result){
+    if(!result||obj!=popup_owner||!read<bool>(api.display_options,obj)||tick-popup_tick>2||!args||!args[0])return false;
+    const Vec position=*static_cast<const Vec*>(args[0]);
+    if(!contains(popup_rect,position.x,position.y))return false;
+    *static_cast<bool*>(result)=true;return true;
 }
 bool picker_prefix(H obj,void**,const patch_method_signature_t*,void*){
     // Always let the game's overlay draw and process its own vanilla options.
@@ -207,44 +270,62 @@ void picker_postfix(H obj,void**,void*,const patch_method_signature_t*){
     auto config=read<H>(api.active_slot),style=config?read<H>(api.slot_style,config):nullptr;
     if(!style||read<int>(api.slot_kind,style)!=1)return;
     const int width=invoke<int>(api.width),height=invoke<int>(api.height);
-    if(width<240||height<160)return;
-    // Keep the game's native picker untouched. The mod registry gets a fixed
-    // dock inside the same editor viewport, independent of native overlay size
-    // and position (which can be zero or consume the remaining screen).
-    const int row_h=std::clamp(height/18,22,30),columns=width>=520?2:1;
-    const int dock_h=std::min(std::max(height/3,120),height-16);
-    const int x=8,total_w=width-16,y=height-dock_h-8;
-    const int header_h=26,footer_h=28;
-    int content_rows=std::max(1,(dock_h-header_h-8)/row_h);
-    int capacity=columns*content_rows;
-    int pages=std::max(1,static_cast<int>((state.actions.size()+capacity-1)/capacity));
-    if(pages>1){content_rows=std::max(1,(dock_h-header_h-footer_h-8)/row_h);capacity=columns*content_rows;
-        pages=std::max(1,static_cast<int>((state.actions.size()+capacity-1)/capacity));}
+    if(width<300||height<160||module_ids.empty())return;
     const std::string context=profile_key()+"\n"+active_slot();
-    if(obj!=popup_owner||context!=popup_context){popup_owner=obj;popup_context=context;popup_page=0;selected.reset();++popup_epoch;}
-    popup_tick=tick;popup_page=std::min(popup_page,pages-1);
-    popup_rect={x,y,total_w,dock_h};
-    rectangle(popup_rect,color(23,35,75,250));
-    Rect header{x+4,y+3,total_w-8,header_h-4};
-    rectangle(header,color(32,58,84));
-    text("模组动作  "+std::to_string(state.actions.size())+
-         (pages>1?"  "+std::to_string(popup_page+1)+"/"+std::to_string(pages):""),
-         header,color(240,244,255));
+    if(obj!=popup_owner||context!=popup_context){popup_owner=obj;popup_context=context;popup_page=0;popup_module=0;selected.reset();++popup_epoch;}
+    popup_module=std::clamp(popup_module,0,static_cast<int>(module_ids.size())-1);
+    const std::string& selected_module=module_ids[popup_module];
+    const int action_count=module_action_count(selected_module),pages=std::max(1,(action_count+3)/4);
+    popup_page=std::clamp(popup_page,0,pages-1);
+    const int width_px=std::min(width-16,std::max(420,width*52/100));
+    const int x=(width-width_px)/2,row_h=std::clamp(height/18,22,30),header_h=36,footer_h=28;
+    const int first_action=popup_page*4,visible_actions=std::min(4,std::max(0,action_count-first_action));
+    const int content_rows=(visible_actions+1)/2;
+    const int dock_h=8+header_h+content_rows*row_h+8+footer_h+4;
+    const int y=std::max(8,height-dock_h-8);
+    popup_rect={x,y,width_px,dock_h};
+    popup_tick=tick;
     rows.clear();
+    rectangle(popup_rect,color(23,35,75,250));
+    Rect header{x+4,y+3,width_px-8,header_h};rectangle(header,color(32,58,84));
+    const int nav_w=header_h-4;
+    const int module_count=static_cast<int>(module_ids.size());
+    for(int direction=0;direction<2;++direction){
+        const int delta=direction==0?-1:1;
+        const bool enabled=module_count>1;
+        Rect r=direction==0?Rect{x+7,y+5,nav_w,nav_w}:Rect{x+width_px-nav_w-7,y+5,nav_w,nav_w};
+        Choice choice{enabled?4:0,delta,{},r,popup_epoch};
+        rectangle(r,enabled?color(54,83,117):color(39,57,78));
+        text(direction==0?"‹":"›",r,enabled?color(248,222,135):color(117,132,150),true);
+        if(enabled)rows.push_back(choice);
+    }
+    text(module_title(selected_module)+"  "+std::to_string(popup_module+1)+"/"+std::to_string(module_count),
+         {x+nav_w+18,y+5,width_px-2*nav_w-36,nav_w},color(240,244,255),true);
     int index=0;
     for(auto& [key,a]:state.actions){
-        const int local=index++-popup_page*capacity;
-        if(local<0||local>=capacity)continue;
-        Rect r{x+(local%columns)*(total_w/columns)+3,y+header_h+(local/columns)*row_h+2,total_w/columns-6,row_h-4};
+        if(a.owner!=selected_module)continue;
+        const int local=index++-first_action;
+        if(local<0||local>=4)continue;
+        Rect r{x+(local%2)*(width_px/2)+4,y+header_h+(local/2)*row_h+2,width_px/2-8,row_h-4};
         Choice choice{2,0,key,r,popup_epoch};
-        rectangle(r,color(44,82,99,250));text("["+a.owner+"] "+a.name,r,color(240,244,255));rows.push_back(choice);
+        rectangle(r,color(44,82,99,250));
+        Rect badge{r.x+4,r.y+3,row_h-10,row_h-10};rectangle(badge,color(75,112,150));
+        size_t first=0;if(!a.name.empty()){unsigned char c=static_cast<unsigned char>(a.name[0]);first=c<0x80?1:c<0xe0?2:c<0xf0?3:4;}
+        text(a.name.substr(0,first),badge,color(248,222,135),true);
+        text(a.name,{badge.x+badge.w+4,r.y,r.w-badge.w-12,r.h},color(240,244,255));rows.push_back(choice);
     }
-    if(pages>1){
+    {
         for(int i=0;i<2;++i){
-            Rect r{x+i*(total_w/2)+3,y+dock_h-footer_h+2,total_w/2-6,footer_h-4};
-            Choice choice{3,i==0?-1:1,{},r,popup_epoch};
-            rectangle(r,color(42,54,98));text(i==0?"上一页":"下一页",r,color(240,244,255),true);rows.push_back(choice);
+            const int delta=i==0?-1:1;const bool enabled=i==0?popup_page>0:popup_page+1<pages;
+            Rect r=i==0?Rect{x+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4}:
+                          Rect{x+width_px*58/100+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4};
+            Choice choice{enabled?3:0,delta,{},r,popup_epoch};
+            rectangle(r,enabled?color(42,66,100):color(36,53,74));
+            text(i==0?"‹ 上一页":"下一页 ›",r,enabled?color(240,244,255):color(117,132,150),true);
+            if(enabled)rows.push_back(choice);
         }
+        text(std::to_string(popup_page+1)+"/"+std::to_string(pages),
+             {x+width_px*42/100,y+dock_h-footer_h-2,width_px*16/100,footer_h-4},color(240,244,255),true);
     }
 }
 
@@ -396,7 +477,7 @@ void resolve(){
     api.manager_instance=field(api.manager,"Instance");api.cursor_id=field(api.cursor,"Id");api.cursor_pos=field(api.cursor,"Position");api.cursor_down=field(api.cursor,"Down");api.cursor_old=field(api.cursor,"WasDown");api.cursor_ignore=field(api.cursor,"Ignore");api.cursor_world=field(api.cursor,"IgnoreForWorld");
     api.rect=method(type("Utils","Terraria"),"DrawInvBG",3);api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
     api.adjust=method(type("XNAUnityRunner"),"AdjustRealScreenForUI",1);api.count=method(api.manager,"GetNumCursors",0);api.at=method(api.manager,"GetCursor",1);
-    api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);
+    api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);api.is_over_options=method(type("GUIPulldownSetting"),"IsOverOptions",1);
     api.add_undo=method(api.interface_edit,"AddControlUndo",0);api.has_undo=method(api.interface_edit,"HasUndo",0);api.has_redo=method(api.interface_edit,"HasRedo",0);
 }
 #endif
@@ -435,6 +516,7 @@ void install(){
 #undef REQUIRE_CONTROL_API
         resolve();
         add_hook(method(api.setting,"DrawOverlay",0),picker_prefix,picker_postfix);
+        add_hook(api.is_over_options,popup_hover_prefix,nullptr);
         add_hook(method(api.setting,"GetValue",0),value_prefix,nullptr);
         add_hook(api.update_value,update_prefix,change_postfix,true);
         add_hook(api.close_options,nullptr,popup_closed);
@@ -468,7 +550,7 @@ void install(){
 void shutdown(){
 #if defined(__ANDROID__) && defined(__aarch64__)
     for(auto it=hooks.rbegin();it!=hooks.rend();++it)patchlib_uninstall_hook(*it);
-    hooks.clear();restore_render();clear_input();rows.clear();drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
+    hooks.clear();restore_render();clear_input();rows.clear();module_ids.clear();popup_module=0;drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
 #endif
     ready=false;state.actions.clear();state.clear_history();state.backup.clear();state.clipboard.clear();state.has_backup=false;state.has_clipboard=false;
 }
@@ -478,6 +560,7 @@ void unregister_owner(lua_mod_handle_t* h){
     for(auto& [key,a]:state.actions)if(a.owner==h->mod_id)invalidate(key,true);
 #endif
     state.remove_owner(h->mod_id);
+    refresh_modules();
 }
 void register_api(lua_State* L,lua_mod_handle_t* h){
     lua_newtable(L);
