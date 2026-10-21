@@ -35,7 +35,6 @@ namespace lualoader::core {
 
     ml_result_t unload_mod(mod_manifest_t *mod_manifest);
 
-    ml_result_t reload_mod(mod_manifest_t *mod_manifest);
 
     ml_result_t init_mod(mod_manifest_t *mod_manifest);
 
@@ -47,8 +46,6 @@ namespace lualoader::core {
 
     const ml_info_t *get_info();
 
-    /// 重载 LuaLoader 管理的所有 Mod（供调试工具的 /reload 使用）
-    void reload_all_mods();
 
     /// 依次调用所有 Mod 的 mod.on_gui（每帧渲染）
     void call_all_on_gui();

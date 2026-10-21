@@ -27,7 +27,6 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [句柄与生命周期](#句柄与生命周期)
 - [`mod.item`：注册自定义物品](#moditem注册自定义物品)
 - [`mod.projectile`：注册自定义弹幕](#modprojectile注册自定义弹幕)
-- [调试与热重载](#调试与热重载)
 - [常见陷阱](#常见陷阱)
 - [完整示例](#完整示例)
 
@@ -562,7 +561,7 @@ local id = mod.item.runtime_id("test_sword")   -- 内核分配 ID 之后才有�
 - 必须在**游戏分配物品 ID 之前**注册（即 `mod.init` 阶段），否则拿不到 `runtime_id`。
 - `defaults` 里的字段名需与 `Terraria.Item` 字段同名；值类型不匹配会打日志并忽略。
 - 物品贴图与本地化在加载时预生成，`language`/`can_use` 等回调会在游戏线程被调用。
-- 卸载 Mod（`/reload` 或退出）时会自动注销其注册的物品。
+- 卸载 Mod（退出游戏/管理器禁用）时会自动注销其注册的物品。
 
 ---
 
@@ -668,35 +667,9 @@ mod.net.tile_square(x, y, w, h)      -- 请求服务端同步一块区域的图�
 
 - 必须在**游戏分配弹幕 ID 之前**注册（即 `mod.init` 阶段），否则拿不到 `runtime_id`。
 - 内核会自动按自定义 id 扩容 `TextureAssets.Projectile`、`ProjectileID.Sets.*`、`Main.projFrames/projPet/projHook/projHostile`、`Player.ownedProjectileCounts`。
-- 卸载 Mod（`/reload` 或退出）时会自动注销其注册的弹幕。
+- 卸载 Mod（退出游戏/管理器禁用）时会自动注销其注册的弹幕。
 
 ---
-## ⚠ 不再建议使用热重载功能，尤其是加载了带有自定义内容的Mod情况下，否则将导致存档损坏、丢失，此功能将会在不久的将来移除
-## 调试与热重载
-
-打开调试模式后可用 `/reload` 热重载。配置在**加载器私有目录**（Mod 包里看不到）：
-
-```
-<工作目录>/modloader/private/lzup333.lualoader/config.json
-```
-
-```json
-{ "debug": false }
-```
-
-改成 `true` 并重启游戏后，在**游戏聊天框**输入 `/reload`：
-
-- 该指令会重新扫描 `enables.txt` 并同步：
-  - **热加载**新启用的 Mod；
-  - 热卸载已禁用的 Mod；
-  - 热重载正在运行的 Mod（重跑脚本与 `setup`，并重新安装钩子）；
-- 重载在**下一帧**执行，避免在钩子链里销毁 Lua 状态；
-- 管理器的启用/禁用是异步落盘的，切换后等几秒再 `/reload`。
-
-改脚本 → 保存 → `/reload` 即可生效，无需重新编译或重启游戏。
-
----
-
 ## 常见陷阱
 
 - **Android 一定要显式写字段类型**（如 `"int32"`），否则可能读错。
