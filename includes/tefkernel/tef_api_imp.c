@@ -55,3 +55,4 @@
 #include "terraria/projectile_manager.h"
 #include "terraria/recipe_manager.h"
 #include "terraria/language_manager.h"
+#include "terraria/netmanager.h"

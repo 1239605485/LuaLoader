@@ -29,6 +29,9 @@
 
 #include "json.hpp"
 #include "logger.hpp"
+#include "tefkernel/terraria/netmanager.h"
+#include "tefkernel/patchlib/type.h"
+#include "tefkernel/terraria/main.h"
 #include "lua_engine.hpp"
 #include "platform.hpp"
 #ifdef LUALOADER_GUI
@@ -455,6 +458,27 @@ namespace {
     }
 } // namespace
 
+/// 内核收到的 Mod 消息 → 对应 Mod 的 mod.net.on_receive(channel, payload, player)
+static void on_mod_message(const char *mod_id, const char *channel,
+                           const uint8_t *data, int len, int player) {
+    if (!mod_id) return;
+    const auto it = lualoader::core::lua_mod_handles.find(mod_id);
+    if (it == lualoader::core::lua_mod_handles.end() || !it->second) return;
+    lualoader::lua_mod_handle_t *h = it->second;
+    if (!h->L || h->net_recv_ref == LUA_NOREF) return;
+
+    lua_State *L = h->L;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, h->net_recv_ref);
+    lua_pushstring(L, channel ? channel : "");
+    lua_pushlstring(L, reinterpret_cast<const char *>(data), (size_t) len);
+    lua_pushinteger(L, player);
+    if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        LOG_ERROR("[net] {}: on_receive failed: {}", mod_id, err ? err : "?");
+        lua_pop(L, 1);
+    }
+}
+
 ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     LOG_INFO("Initializing LuaLoader...");
     LOG_DEBUG("Platform: {}, Architecture: {}", LUALOADER_PLATFORM_NAME, LUALOADER_ARCH_NAME);
@@ -467,6 +491,9 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
 
     logger::init();
     logger::init_mod();
+
+    // 联机：注册内核 Mod 消息回调（客户端发包 → 服务端这里分发）
+    terraria_net_set_mod_message_handler(on_mod_message);
 
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
     if (ml_entry && ml_entry->private_dir) {
@@ -491,8 +518,13 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
 
 #ifdef LUALOADER_GUI
     // 原生 GUI 对 Mod 永久开放：任何定义了 mod.on_gui 的 Mod 都会被绘制。
-    // 绘制走游戏自身的 XNA/Unity SpriteBatch，不再需要独立渲染后端。
-    gui::install();
+    // 绘制走游戏自身的 XNA/Unity SpriteBatch。
+    // 服务端（TerrariaServer）没有 GraphicsDevice / spriteBatch，
+    // 安装 GUI 钩子会空指针崩溃，必须跳过。
+    if (terraria_main_is_server())
+        LOG_INFO("[gui] server mode: native GUI disabled");
+    else
+        gui::install();
 #endif
 
     LOG_INFO("LuaLoader initialized successfully");

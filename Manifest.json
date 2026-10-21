@@ -4,8 +4,10 @@
   "icon": {
     "type": "Default"
   },
-  "plugins": {"type": "NULL"},
+  "plugins": {
+    "type": "NULL"
+  },
   "tefkernel": {
-    "minVersion": "1.0.0"
+    "minVersion": "1.1.1"
   }
 }

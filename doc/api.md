@@ -645,6 +645,25 @@ end,
 | `vanilla_ai = true` | 先执行原版 `Projectile.AI()`，再调用 `ai` |
 | `no_ai = true` | 只执行原版 `Projectile.AI()`，不调用 `ai` |
 
+### `mod.net`：联机同步（服务端权威）
+
+```lua
+mod.net.mode()                       -- 0=单机 1=客户端 2=专用服务端 3=开房(host)
+mod.net.send_to_server(channel, payload)   -- 客户端 -> 服务端
+mod.net.on_receive(function(channel, payload, player) end)  -- 只在服务端触发
+mod.net.tile_kill(x, y[, no_item])   -- 请求服务端挖掉图格
+mod.net.tile_square(x, y, w, h)      -- 请求服务端同步一块区域的图格
+```
+
+> `Main.netMode` 的取值：**2 = 专用服务端，3 = 开房（Host & Play）**。
+> Mod 里判断"我是不是服务端"要写成 `mode == 2 or mode == 3`，只判 2 会漏掉开房。
+
+实现要点：
+
+- 客户端把逻辑写成"发包"，真正的世界修改在服务端执行；
+- **服务端直接调用 `WorldGen.KillTile` 不会自动广播**（原版是靠 `Player.PickTile` 发 TileSquare 的），所以服务端连锁/批量改图后要显式 `mod.net.tile_square(...)`；
+- 消息通道复用原版已知消息号（带 magic 校验），未知消息号在 PC↔Android 之间会被传输层丢弃。
+
 ### 说明
 
 - 必须在**游戏分配弹幕 ID 之前**注册（即 `mod.init` 阶段），否则拿不到 `runtime_id`。
