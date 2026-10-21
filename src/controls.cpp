@@ -389,7 +389,26 @@ void configure_storage(const std::string& directory){
 void install(){
 #if defined(__ANDROID__) && defined(__aarch64__)
     if(ready)return;
-    try{resolve();
+    try{
+        // TPF leaves unsupported exports null; C++ catch cannot catch SIGSEGV.
+#define REQUIRE_CONTROL_API(name) if (!name) throw std::runtime_error("kernel export missing: " #name)
+        REQUIRE_CONTROL_API(patchlib_is_valid);
+        REQUIRE_CONTROL_API(patchlib_type_get_type);
+        REQUIRE_CONTROL_API(patchlib_type_get_field);
+        REQUIRE_CONTROL_API(patchlib_type_get_method_by_param_count);
+        REQUIRE_CONTROL_API(patchlib_type_get_inner_type);
+        REQUIRE_CONTROL_API(patchlib_field_get_pointer);
+        REQUIRE_CONTROL_API(patchlib_field_set_value);
+        REQUIRE_CONTROL_API(patchlib_method_invoke_args);
+        REQUIRE_CONTROL_API(patchlib_method_get_pointer);
+        REQUIRE_CONTROL_API(patchlib_string_cstr);
+        REQUIRE_CONTROL_API(patchlib_string_create);
+        REQUIRE_CONTROL_API(patchlib_array_length);
+        REQUIRE_CONTROL_API(patchlib_array_at);
+        REQUIRE_CONTROL_API(patchlib_install_prepost_hook);
+        REQUIRE_CONTROL_API(patchlib_uninstall_hook);
+#undef REQUIRE_CONTROL_API
+        resolve();
         add_hook(method(api.setting,"DrawOverlay",0),picker_prefix,nullptr);
         add_hook(method(api.setting,"GetValue",0),value_prefix,nullptr);
         add_hook(api.update_value,update_prefix,change_postfix,true);

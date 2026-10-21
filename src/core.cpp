@@ -248,7 +248,19 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     logger::init_mod();
 
     // 联机：注册内核 Mod 消息回调（客户端发包 → 服务端这里分发）
-    terraria_net_set_mod_message_handler(on_mod_message);
+    if (terraria_net_set_mod_message_handler)
+        terraria_net_set_mod_message_handler(on_mod_message);
+    else
+        LOG_WARN("[init] kernel has no mod-message receiver; networking callback unavailable");
+
+    // Older kernels do not export this optional query. Android runs the client.
+    bool is_server = true;
+    if (terraria_main_is_server)
+        is_server = terraria_main_is_server();
+#if defined(__ANDROID__)
+    else
+        is_server = false;
+#endif
 
     if(ml_entry && ml_entry->private_dir)controls::configure_storage(ml_entry->private_dir);
 
@@ -265,13 +277,13 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     // 绘制走游戏自身的 XNA/Unity SpriteBatch。
     // 服务端（TerrariaServer）没有 GraphicsDevice / spriteBatch，
     // 安装 GUI 钩子会空指针崩溃，必须跳过。
-    if (terraria_main_is_server())
+    if (is_server)
         LOG_INFO("[gui] server mode: native GUI disabled");
     else
         gui::install();
 #endif
 
-    if(!terraria_main_is_server())controls::install();
+    if(!is_server)controls::install();
 
     LOG_INFO("LuaLoader initialized successfully");
     return ML_SUCCESS;
@@ -312,8 +324,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            34,
-            "2.3.0-dev",
+            35,
+            "2.3.1-dev",
             1,
             0,
             nullptr,
