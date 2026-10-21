@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -128,7 +129,13 @@ H field(H t,const char* name){return need(patchlib_type_get_field(t,name),name);
 H method(H t,const char* name,int n){return need(patchlib_type_get_method_by_param_count(t,name,n),name);}
 template<class T>T read(H f,H object=nullptr){T v{};if(f){auto ptr=patchlib_field_get_pointer(f,object);if(ptr)std::memcpy(&v,ptr,sizeof(v));}return v;}
 template<class T>void write(H f,H object,T value){patchlib_field_set_value(f,object,&value);}
-template<class T>T invoke(H m,H obj=nullptr,void** args=nullptr){T out{};if(!patchlib_method_invoke_args(m,obj,&out,args))throw std::runtime_error("native control call failed");return out;}
+template<class T>T invoke(H m,H obj=nullptr,void** args=nullptr){
+    // Android's kernel passes this buffer directly to ffi_call. Small integer
+    // returns are widened to ffi_arg (one machine word), including bool/int.
+    alignas(std::uintptr_t) unsigned char result[std::max(sizeof(T),sizeof(std::uintptr_t))]{};
+    if(!patchlib_method_invoke_args(m,obj,result,args))throw std::runtime_error("native control call failed");
+    T out{};std::memcpy(&out,result,sizeof(out));return out;
+}
 void call(H m,H obj=nullptr,void** args=nullptr){if(!patchlib_method_invoke_args(m,obj,nullptr,args))throw std::runtime_error("native control call failed");}
 std::string string(H s){if(!s)return {};char* p=patchlib_string_cstr(s);if(!p)return {};std::string out(p);std::free(p);return out;}
 H profile(){auto s=read<H>(api.styles_instance);return s?invoke<H>(api.active_profile,s):nullptr;}
