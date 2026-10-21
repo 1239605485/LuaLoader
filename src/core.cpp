@@ -20,6 +20,7 @@
  *******************************************************************************/
 
 #include "core.hpp"
+#include "controls.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -249,6 +250,8 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     // 联机：注册内核 Mod 消息回调（客户端发包 → 服务端这里分发）
     terraria_net_set_mod_message_handler(on_mod_message);
 
+    if(ml_entry && ml_entry->private_dir)controls::configure_storage(ml_entry->private_dir);
+
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
     if (ml_entry && ml_entry->private_dir) {
 #ifdef LUALOADER_GUI
@@ -268,11 +271,14 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
         gui::install();
 #endif
 
+    if(!terraria_main_is_server())controls::install();
+
     LOG_INFO("LuaLoader initialized successfully");
     return ML_SUCCESS;
 }
 
 ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
+    controls::shutdown();
     LOG_INFO("Cleaning up LuaLoader...");
 
 
@@ -306,8 +312,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
-            33,
-            "2.2.0-dev",
+            34,
+            "2.3.0-dev",
             1,
             0,
             nullptr,

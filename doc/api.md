@@ -13,6 +13,7 @@ LuaLoader 用 Lua 写 Mod，不用编译，一份脚本全平台通用。每个 
   - [环境信息](#环境信息)
   - [日志](#日志)
   - [文件](#文件)
+- [`mod.controls`：原版触控布局中的模组按键](#modcontrols原版触控布局中的模组按键)
 - [`mod.gui`：原生图形界面](#modgui原生图形界面)
 - [`mod.patch`：调用内核](#modpatch调用内核)
   - [取类型与成员](#取类型与成员)
@@ -720,3 +721,56 @@ todo_list = { "setup" }
 ## 滚动容器、文件夹与资源预算
 
 滚动容器、图标文件夹及图片缓存接口见 [gui.md](gui.md)。
+
+
+## `mod.controls`：原版触控布局中的模组按键
+
+2.3.0-dev 起提供，当前接入目标为 **Android arm64、Terraria PE 1.4.5.8**。
+接口注册的是玩家可绑定的动作。玩家进入游戏原版“自定义触控布局”，新增或选择一个
+**按钮**，在操作绑定菜单选择带“[模组]”前缀的动作，再用原版编辑器拖动、缩放并应用。
+注册动作不会自动创建屏幕按钮，也不创建 `mod.on_gui` 窗口。摇杆和径向菜单绑定尚未接入。
+
+| 接口 | 说明 |
+| --- | --- |
+| `mod.controls.available()` → `bool, reason` | 原版布局接入是否成功；失败时返回接口/平台原因。 |
+| `mod.controls.register { id="skill", name="骷髅投骨" }` → `id` | 注册动作；同 Mod 内 id 唯一。id 为 1–64 个英数字、`_`、`-`、`.`；名称不超过 128 UTF-8 字节。 |
+| `mod.controls.unregister(id)` → `bool` | 注销动作；保留用户绑定记录供重新加载使用。 |
+| `mod.controls.down(id)` → `bool` | 是否仍按住；同一动作允许多个手指/多个绑定按钮，最后一个松开后才结束。 |
+| `mod.controls.pressed(id)` → `bool` | 消费一次按下事件。连续按住不会逐帧返回 true。 |
+| `mod.controls.released(id)` → `bool` | 消费一次松开事件。手指移出按键视为取消，仍拦截该手指到松开。 |
+| `mod.controls.set_enabled(id, bool)` | 禁用后保留按钮显示，停止动作并清空积压事件。 |
+| `mod.controls.set_visible(id, bool)` | 隐藏/显示已绑定的按钮；不删除绑定。 |
+
+动作按 Mod id 隔离；不直接执行 Lua 回调。在 Mod 原有的本地玩家更新钩子里读取事件：
+
+```lua
+function mod.init()
+    local available, reason = mod.controls.available()
+    assert(available, reason)
+    mod.controls.register { id="transform", name="怪物变身" }
+    mod.controls.register { id="cycle", name="切换怪物" }
+    mod.controls.register { id="capture", name="捕获怪物" }
+    mod.controls.register { id="skill", name="怪物技能" }
+end
+
+-- 在你的本地玩家更新逻辑中调用；这里只演示事件消费，不重复安装游戏钩子。
+local function update_morph_controls()
+    if mod.controls.pressed("transform") then request_transform() end
+    if mod.controls.pressed("cycle") then request_next_form() end
+    if mod.controls.pressed("capture") then request_capture() end
+    if mod.controls.pressed("skill") then request_skill() end
+end
+```
+
+### 生命周期与配置
+
+- Mod 卸载/重载时，Loader 自动注销该 Mod 的动作和按住状态。停用的 Mod 不会触发原版动作。
+- 游戏保存布局时，模组动作映射单独保存在 Loader 私有目录的 `controls_bindings.json`；
+  位置、尺寸、样式和多点触控设置继续由原版配置管理。
+- 原版枚举和映射数组不扩容。配置中的模组按钮保持原版“未绑定”值；只有原版按钮绘制期间
+  临时使用一个合法的绘制类别，并在绘制结束和保存前恢复。不会把自定义编号写进原版数组。
+- 原版的放弃修改、撤销/重做、复制/粘贴及恢复默认入口会同步模组映射。仍需 Android 实测这些流程。
+- 单个按钮关闭多点触控时只接收首个手指；开启时多个触点合并为同一动作的按住状态。
+- 原版分享码不会包含 Loader 的独立映射文件；跨设备分享布局后需重新选择模组动作。
+- 当前按钮沿用原版背景并绘制动作名称，不接收独立 PNG 图标。
+- `available()` 成功和宿主模拟测试通过不等于 Android 游戏实测通过；绘制、绑定、缩放、保存重启需要设备验证。

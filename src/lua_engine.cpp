@@ -18,6 +18,7 @@
  *******************************************************************************/
 
 #include "lua_engine.hpp"
+#include "controls.hpp"
 #include "lua_api.hpp"
 #include "mod_api.hpp"
 #include "lualoader_mod.h"
@@ -567,6 +568,7 @@ namespace lualoader::lua_engine {
     void close(lua_mod_handle_t *handle) {
         if (!handle) return;
         lua_api::uninstall_all_hooks(handle);
+        controls::unregister_owner(handle);
         lua_api::unregister_items(handle);
         lua_api::unregister_projectiles(handle);
         if (handle->L) {

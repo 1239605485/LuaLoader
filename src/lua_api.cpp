@@ -18,6 +18,7 @@
  *******************************************************************************/
 
 #include "lua_api.hpp"
+#include "controls.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -3216,6 +3217,8 @@ namespace lualoader::lua_api {
 #ifdef LUALOADER_GUI
         lualoader::gui::register_api(L, handle);
 #endif
+
+        controls::register_api(L, handle);
 
         lua_pushvalue(L, -1);
         lua_setglobal(L, "mod");

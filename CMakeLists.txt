@@ -24,6 +24,7 @@ add_subdirectory(lib/lua-5.4.8)
 # 原生 GUI：直接使用游戏自带的 XNA/Unity SpriteBatch 绘制，不再依赖 Dear ImGui。
 set(LUALOADER_SOURCES
         src/core.cpp
+        src/controls.cpp
         src/logger.cpp
         src/lua_engine.cpp
         src/lua_api.cpp
@@ -128,4 +129,17 @@ if(ANDROID)
     add_subdirectory(lib/gui-xdl)
     set_target_properties(xdl PROPERTIES C_VISIBILITY_PRESET hidden)
     target_link_libraries(LuaLoader xdl)
+endif()
+
+# Opt-in host tests for native touch bindings (no Android device emulation).
+option(LUALOADER_BUILD_CONTROL_TESTS "Build touch binding state and mock integration tests" OFF)
+if(LUALOADER_BUILD_CONTROL_TESTS AND NOT ANDROID AND NOT WIN32)
+    enable_testing()
+    add_executable(controls_state_test tests/controls_state_test.cpp)
+    target_include_directories(controls_state_test PRIVATE includes)
+    add_test(NAME controls_state COMMAND controls_state_test)
+    add_executable(controls_native_test tests/controls_native_test.cpp)
+    target_include_directories(controls_native_test PRIVATE includes)
+    target_link_libraries(controls_native_test PRIVATE lua spdlog::spdlog)
+    add_test(NAME controls_native COMMAND controls_native_test)
 endif()
