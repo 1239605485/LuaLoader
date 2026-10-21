@@ -89,10 +89,10 @@ static_assert(sizeof(Vec)==8&&sizeof(Rect)==16&&sizeof(Color)==4);
 struct Api {
  H main{},styles{},binding{},slot{},slot_type{},panel{},setting{},quick{},editor{},interface_edit{},cursor{},manager{},gui{};
  H batch{},width{},height{},menu{},menu_getter{},styles_instance{},active_profile{},profile_id{},profile_controls{},binding_slot{},binding_action{};
- H slot_id{},slot_style{},slot_kind{},slot_multi{},active_control{},active_slot{},options{},action_binding{},display_options{};
- H gui_active{},gui_edit{},edit_enabled{},gui_editor{},gui_runtime{},ui_open{};
+ H slot_id{},slot_style{},slot_kind{},slot_multi{},active_control{},active_slot{},action_binding{},display_options{};
+ H gui_active{},gui_edit{},edit_enabled{},gui_editor{},gui_runtime{},ui_open{},editor_panel{},panel_overlay{};
  H manager_instance{},cursor_id{},cursor_pos{},cursor_down{},cursor_old{},cursor_ignore{},cursor_world{};
- H rect{},text{},get_region{},adjust{},count{},at{},update_value{},close_options{},get_option{},add_undo{},has_undo{},has_redo{};
+ H rect{},text{},get_region{},adjust{},count{},at{},update_value{},close_options{},add_undo{},has_undo{},has_redo{};
 } api;
 std::vector<patch_hook_id_t> hooks;
 unsigned long long tick=0;
@@ -181,68 +181,73 @@ void popup_closed(H obj,void**,void*,const patch_method_signature_t*){
 void close_popup(H obj){call(api.close_options,obj);rows.clear();selected.reset();popup_owner=nullptr;popup_context.clear();++popup_epoch;}
 void choose(H obj,Choice choice){
     if(choice.kind==3){popup_page=std::max(0,popup_page+choice.value);++popup_epoch;return;}
-    if(choice.kind==4){close_popup(obj);return;}
-    if(choice.kind==2&&!state.find(choice.key))return;
+    if(choice.kind!=2||!state.find(choice.key))return;
     auto slot=active_slot(),p=profile_key();if(slot.empty()||p.empty())return;
     auto edit=edit_object();if(edit)call(api.add_undo,edit); // participates in native undo/redo
-    int value=choice.kind==2?unbound:choice.value;void* args[]={&value};
+    int value=unbound;void* args[]={&value};
     selecting=true;
     try{call(api.update_value,obj,args);}catch(...){selecting=false;throw;}
     selecting=false;
-    if(choice.kind==2&&state.find(choice.key))state.bindings[p][slot]=choice.key;else state.erase(p,slot);
+    state.bindings[p][slot]=choice.key;
     close_popup(obj);
 }
 bool picker_prefix(H obj,void**,const patch_method_signature_t*,void*){
-    if(state.actions.empty()||!read<bool>(api.display_options,obj)||read<int>(api.action_binding,obj)!=1)return false;
-    auto config=read<H>(api.active_slot),style=config?read<H>(api.slot_style,config):nullptr;
-    if(!style||read<int>(api.slot_kind,style)!=1)return false;
-    // DrawOverlay normally initializes its native option cache. Do not replace
-    // it until the game has supplied those entries. Returning false allows
-    // the original overlay to perform its own initialization first.
-    auto options=read<H>(api.options,obj);
-    const size_t native_count=options?patchlib_array_length(options):0;
-    if(!native_count||native_count>64){
-        rows.clear();selected.reset();popup_owner=nullptr;popup_context.clear();
-        return false;
+    // Always let the game's overlay draw and process its own vanilla options.
+    if(obj==popup_owner&&selected){
+        auto choice=*selected;selected.reset();
+        if(choice.epoch==popup_epoch){choose(obj,choice);if(!popup_owner)return true;}
     }
+    return false;
+}
+void picker_postfix(H obj,void**,void*,const patch_method_signature_t*){
+    if(state.actions.empty()||!read<bool>(api.display_options,obj)||read<int>(api.action_binding,obj)!=1){
+        if(obj==popup_owner)popup_closed(obj,nullptr,nullptr,nullptr);
+        return;
+    }
+    auto config=read<H>(api.active_slot),style=config?read<H>(api.slot_style,config):nullptr;
+    if(!style||read<int>(api.slot_kind,style)!=1)return;
+    auto g=gui_object(),editor=g?read<H>(api.gui_editor,g):nullptr;
+    auto panel=editor?read<H>(api.editor_panel,editor):nullptr;
+    if(!panel)return;
+    const Rect native=read<Rect>(api.panel_overlay,panel);
+    const int width=invoke<int>(api.width),height=invoke<int>(api.height);
+    if(native.w<=0||native.h<=0||width<200||height<160)return;
+    const int row_h=28,columns=2;
+    const int total_w=std::min(native.w,width-16);
+    const int x=std::clamp(native.x,8,width-total_w-8);
+    const int y=native.y+native.h+6;
+    // Never cover the native choices when the viewport has insufficient space.
+    const int available=(height-y-8)/row_h;
+    if(available<1){rows.clear();return;}
+    const int wanted=static_cast<int>((state.actions.size()+columns-1)/columns);
+    const int per_column=std::min(wanted,std::min(4,available));
+    const bool paged=static_cast<int>(state.actions.size())>columns*per_column;
+    const int content_rows=paged?std::max(1,per_column-1):per_column;
+    const int capacity=columns*content_rows;
+    const int pages=std::max(1,static_cast<int>((state.actions.size()+capacity-1)/capacity));
+    if(pages>1&&available<2){rows.clear();return;}
     const std::string context=profile_key()+"\n"+active_slot();
     if(obj!=popup_owner||context!=popup_context){popup_owner=obj;popup_context=context;popup_page=0;selected.reset();++popup_epoch;}
-    popup_tick=tick;
-    if(selected){auto choice=*selected;selected.reset();if(choice.epoch==popup_epoch){choose(obj,choice);if(!popup_owner)return true;}}
-    std::vector<Choice> all;
-    for(size_t i=0;i<native_count;++i){
-        int value=unbound;
-        if(!patchlib_array_at(options,i,&value)){rows.clear();return false;}
-        all.push_back({1,value,{},{},0});
-    }
-    for(auto& [key,a]:state.actions)all.push_back({2,0,key,{},0});
-    const int width=invoke<int>(api.width),height=invoke<int>(api.height);
-    if(width<200||height<160)return false;
-    const int row_h=std::clamp(height/20,28,40),columns=width>=700?3:2;
-    const int max_rows=std::max(1,std::min(10,(height*3/4-row_h)/row_h));
-    const int per_column=std::min(max_rows,std::max(1,static_cast<int>((all.size()+columns-1)/columns)));
-    const int capacity=columns*per_column,pages=std::max(1,static_cast<int>((all.size()+capacity-1)/capacity));
-    popup_page=std::min(popup_page,pages-1);
-    const int col_w=std::min(220,(width*3/4)/columns),total_w=columns*col_w;
-    popup_rect={(width-total_w)/2,std::max(8,(height-(per_column+1)*row_h)/2),total_w,(per_column+1)*row_h};
+    popup_tick=tick;popup_page=std::min(popup_page,pages-1);
+    popup_rect={x,y,total_w,(content_rows+(pages>1?1:0))*row_h};
     rectangle(popup_rect,color(23,35,75,250));rows.clear();
-    for(int i=0;i<capacity;++i){int index=popup_page*capacity+i;if(index>=static_cast<int>(all.size()))break;
-        auto choice=all[index];choice.rect={popup_rect.x+(i/per_column)*col_w+3,popup_rect.y+(i%per_column)*row_h+3,col_w-6,row_h-6};choice.epoch=popup_epoch;
-        rectangle(choice.rect,color(choice.kind==2?44:43,choice.kind==2?82:65,choice.kind==2?99:125,250));
-        std::string label;
-        if(choice.kind==2)label="[模组] "+state.find(choice.key)->name;
-        else { // Native labels remain owned by the game; no enum extension.
-            using Get=void*(*)(void*,int);auto get=reinterpret_cast<Get>(patchlib_method_get_pointer(api.get_option));
-            label=get?string(get(obj,index)):std::string{};
-        }
-        text(label,choice.rect,color(240,244,255));rows.push_back(choice);
+    int index=0;
+    for(auto& [key,a]:state.actions){
+        const int local=index++-popup_page*capacity;
+        if(local<0||local>=capacity)continue;
+        Rect r{x+(local%columns)*(total_w/columns)+3,y+(local/columns)*row_h+3,total_w/columns-6,row_h-6};
+        Choice choice{2,0,key,r,popup_epoch};
+        rectangle(r,color(44,82,99,250));text("[模组] "+a.name,r,color(240,244,255));rows.push_back(choice);
     }
-    Rect footer{popup_rect.x,popup_rect.y+per_column*row_h,total_w,row_h};
-    const int third=total_w/3;
-    for(int i=0;i<3;++i){Choice choice{i==1?4:3,i==0?-1:1,{}, {footer.x+i*third+3,footer.y+3,third-6,row_h-6},popup_epoch};
-        rectangle(choice.rect,color(42,54,98));text(i==0?"上一页":i==2?"下一页":"关闭 "+std::to_string(popup_page+1)+"/"+std::to_string(pages),choice.rect,color(240,244,255),true);rows.push_back(choice);}
-    return true;
+    if(pages>1){
+        for(int i=0;i<2;++i){
+            Rect r{x+i*(total_w/2)+3,y+content_rows*row_h+3,total_w/2-6,row_h-6};
+            Choice choice{3,i==0?-1:1,{},r,popup_epoch};
+            rectangle(r,color(42,54,98));text(i==0?"上一页":"下一页",r,color(240,244,255),true);rows.push_back(choice);
+        }
+    }
 }
+
 bool value_prefix(H obj,void**,const patch_method_signature_t*,void* result){
     if(!result||read<int>(api.action_binding,obj)!=1)return false;
     auto a=state.find(active_key());if(!a)return false;
@@ -386,12 +391,12 @@ void resolve(){
     api.styles_instance=field(api.styles,"Instance");api.active_profile=method(api.styles,"get_ActiveProfile",0);
     auto prof=type("VirtualControlsProfile_Layout");api.profile_id=field(prof,"Id");api.profile_controls=field(prof,"Controls");
     api.binding_slot=field(api.binding,"SlotId");api.binding_action=field(api.binding,"Action");api.slot_id=field(api.slot,"SlotId");api.slot_multi=field(api.slot,"MultiTouch");api.slot_style=field(api.slot,"Style");api.slot_kind=field(api.slot_type,"ControlType");
-    api.active_control=field(api.panel,"ActiveControl");api.active_slot=field(api.panel,"ActiveSlotConfig");api.options=field(api.setting,"controlOptions");api.action_binding=field(api.setting,"ActionBinding");
-    api.display_options=field(type("GUIPulldownSetting"),"displayOptions");api.gui_active=field(api.gui,"Active");api.gui_edit=field(api.gui,"GUIInterfaceEdit");api.gui_editor=field(api.gui,"GUIVirtualInputControllerEdit");api.edit_enabled=field(api.interface_edit,"Enabled");api.gui_runtime=field(api.gui,"GUIVirtualInputController");api.ui_open=method(type("GUIVirtualInputController"),"get_InGameUIOpen",0);
+    api.active_control=field(api.panel,"ActiveControl");api.active_slot=field(api.panel,"ActiveSlotConfig");api.action_binding=field(api.setting,"ActionBinding");
+    api.display_options=field(type("GUIPulldownSetting"),"displayOptions");api.gui_active=field(api.gui,"Active");api.gui_edit=field(api.gui,"GUIInterfaceEdit");api.gui_editor=field(api.gui,"GUIVirtualInputControllerEdit");api.editor_panel=field(api.editor,"ControlPanel");api.panel_overlay=field(api.panel,"overlayRegion");api.edit_enabled=field(api.interface_edit,"Enabled");api.gui_runtime=field(api.gui,"GUIVirtualInputController");api.ui_open=method(type("GUIVirtualInputController"),"get_InGameUIOpen",0);
     api.manager_instance=field(api.manager,"Instance");api.cursor_id=field(api.cursor,"Id");api.cursor_pos=field(api.cursor,"Position");api.cursor_down=field(api.cursor,"Down");api.cursor_old=field(api.cursor,"WasDown");api.cursor_ignore=field(api.cursor,"Ignore");api.cursor_world=field(api.cursor,"IgnoreForWorld");
     api.rect=method(type("Utils","Terraria"),"DrawInvBG",3);api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
     api.adjust=method(type("XNAUnityRunner"),"AdjustRealScreenForUI",1);api.count=method(api.manager,"GetNumCursors",0);api.at=method(api.manager,"GetCursor",1);
-    api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);api.get_option=method(api.setting,"GetOption",1);
+    api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);
     api.add_undo=method(api.interface_edit,"AddControlUndo",0);api.has_undo=method(api.interface_edit,"HasUndo",0);api.has_redo=method(api.interface_edit,"HasRedo",0);
 }
 #endif
@@ -429,7 +434,7 @@ void install(){
         REQUIRE_CONTROL_API(patchlib_uninstall_hook);
 #undef REQUIRE_CONTROL_API
         resolve();
-        add_hook(method(api.setting,"DrawOverlay",0),picker_prefix,nullptr);
+        add_hook(method(api.setting,"DrawOverlay",0),picker_prefix,picker_postfix);
         add_hook(method(api.setting,"GetValue",0),value_prefix,nullptr);
         add_hook(api.update_value,update_prefix,change_postfix,true);
         add_hook(api.close_options,nullptr,popup_closed);
