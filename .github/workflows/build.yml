@@ -11,6 +11,10 @@ on:
         description: '创建 Release'
         type: boolean
         default: false
+      prerelease:
+        description: '创建为预发布 (Pre-release)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -133,7 +137,7 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # ---------- 仅在勾选时创建 Release ----------
+  # ---------- 仅在勾选时创建 Release（正式或预发布） ----------
   release:
     needs: build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
@@ -147,9 +151,26 @@ jobs:
           name: LuaLoader-package
           path: dist/
 
+      - name: Compute release tag
+        id: tag
+        shell: bash
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            TAG="v${VERSION}-preview"
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            TAG="v${VERSION}"
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "将要创建的 Tag: ${TAG}"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
           generate_release_notes: true
-          tag_name: v${{ needs.build.outputs.version }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          prerelease: ${{ steps.tag.outputs.is_prerelease }}
+          name: ${{ steps.tag.outputs.is_prerelease == 'true' && format('LuaLoader {0} (Preview)', needs.build.outputs.version) || format('LuaLoader {0}', needs.build.outputs.version) }}
