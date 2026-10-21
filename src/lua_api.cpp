@@ -39,6 +39,9 @@ extern "C" {
 #include "lauxlib.h"
 }
 
+#if defined(__ANDROID__)
+#include "xdl.h"
+#endif
 #include "logger.hpp"
 #ifdef LUALOADER_GUI
 #include "gui.hpp"
@@ -1049,11 +1052,40 @@ namespace lualoader::lua_api {
         return 1;
     }
 
-    /// 数组元素真实大小（未知按指针大小；上限 1MB 防止异常数组）
-    static size_t array_element_bytes(const patch_handle_t array) {
-        size_t n = patchlib_array_element_size(array);
-        if (n == 0) n = sizeof(void *);
-        if (n > (1u << 20)) n = (1u << 20);
+    /// Query the optional kernel export, or the actual Android array class.
+    static size_t array_element_bytes(lua_State *L, const patch_handle_t array) {
+        size_t n = 0;
+        if (patchlib_array_element_size) {
+            n = patchlib_array_element_size(array);
+        }
+#if defined(__ANDROID__)
+        else {
+            struct ArrayApi {
+                using GetClass = void *(*)(void *);
+                using ElementSize = int (*)(const void *);
+                GetClass get_class = nullptr;
+                ElementSize element_size = nullptr;
+                ArrayApi() {
+                    void *lib = xdl_open("libil2cpp.so", XDL_DEFAULT);
+                    if (!lib) return;
+                    get_class = reinterpret_cast<GetClass>(xdl_sym(lib, "il2cpp_object_get_class", nullptr));
+                    element_size = reinterpret_cast<ElementSize>(xdl_sym(lib, "il2cpp_array_element_size", nullptr));
+                    xdl_close(lib);
+                }
+            };
+            static const ArrayApi api;
+            if (api.get_class && api.element_size) {
+                void *klass = api.get_class(array);
+                const int bytes = klass ? api.element_size(klass) : 0;
+                if (bytes > 0) n = static_cast<size_t>(bytes);
+            }
+        }
+#endif
+        // Never guess pointer width: primitive and value-type arrays differ.
+        if (n == 0 || n > (1u << 20)) {
+            luaL_error(L, "cannot determine array element size safely (kernel export unavailable or invalid size)");
+            return 0;
+        }
         return n;
     }
 
@@ -1063,7 +1095,7 @@ namespace lualoader::lua_api {
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
         /* 关键：内核按元素真实大小 memcpy，缓冲必须够大（原来固定 8 字节会写穿栈） */
-        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        std::vector<unsigned char> storage(array_element_bytes(L, array), 0);
         void *buffer = storage.data();
         if (!patchlib_array_at(array, index, buffer)) {
             lua_pushnil(L);
@@ -1139,7 +1171,7 @@ namespace lualoader::lua_api {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
-        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        std::vector<unsigned char> storage(array_element_bytes(L, array), 0);
         void *buffer = storage.data();
         std::vector<patch_handle_t> owned;
         read_element(L, 3, 4, buffer, owned);
@@ -1153,7 +1185,7 @@ namespace lualoader::lua_api {
     static int l_patch_array_fill(lua_State *L) {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
-        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        std::vector<unsigned char> storage(array_element_bytes(L, array), 0);
         void *buffer = storage.data();
         std::vector<patch_handle_t> owned;
         read_element(L, 2, 3, buffer, owned);
@@ -1189,7 +1221,7 @@ namespace lualoader::lua_api {
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
         const size_t size = static_cast<size_t>(luaL_checkinteger(L, 3));
-        const size_t elem = array_element_bytes(array);
+        const size_t elem = array_element_bytes(L, array);
         if (size == 0 || size > elem) return luaL_error(L, "bad size (1..%d)", (int) elem);
         std::vector<unsigned char> buf(elem, 0);
         if (!patchlib_array_at(array, index, buf.data())) {
@@ -1207,7 +1239,7 @@ namespace lualoader::lua_api {
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
         size_t len = 0;
         const char *data = luaL_checklstring(L, 3, &len);
-        const size_t elem = array_element_bytes(array);
+        const size_t elem = array_element_bytes(L, array);
         if (len == 0 || len > elem) return luaL_error(L, "bad size (1..%d)", (int) elem);
         std::vector<unsigned char> buf(elem, 0);
         std::memcpy(buf.data(), data, len);
