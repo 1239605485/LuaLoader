@@ -196,21 +196,34 @@ bool picker_prefix(H obj,void**,const patch_method_signature_t*,void*){
     if(state.actions.empty()||!read<bool>(api.display_options,obj)||read<int>(api.action_binding,obj)!=1)return false;
     auto config=read<H>(api.active_slot),style=config?read<H>(api.slot_style,config):nullptr;
     if(!style||read<int>(api.slot_kind,style)!=1)return false;
+    // DrawOverlay normally initializes its native option cache. Do not replace
+    // it until the game has supplied those entries. Returning false allows
+    // the original overlay to perform its own initialization first.
+    auto options=read<H>(api.options,obj);
+    const size_t native_count=options?patchlib_array_length(options):0;
+    if(!native_count||native_count>64){
+        rows.clear();selected.reset();popup_owner=nullptr;popup_context.clear();
+        return false;
+    }
     const std::string context=profile_key()+"\n"+active_slot();
     if(obj!=popup_owner||context!=popup_context){popup_owner=obj;popup_context=context;popup_page=0;selected.reset();++popup_epoch;}
     popup_tick=tick;
     if(selected){auto choice=*selected;selected.reset();if(choice.epoch==popup_epoch){choose(obj,choice);if(!popup_owner)return true;}}
     std::vector<Choice> all;
-    auto options=read<H>(api.options,obj);
-    for(size_t i=0,n=options?std::min<size_t>(patchlib_array_length(options),64):0;i<n;++i){int value=unbound;if(patchlib_array_at(options,i,&value))all.push_back({1,value,{},{},0});}
+    for(size_t i=0;i<native_count;++i){
+        int value=unbound;
+        if(!patchlib_array_at(options,i,&value)){rows.clear();return false;}
+        all.push_back({1,value,{},{},0});
+    }
     for(auto& [key,a]:state.actions)all.push_back({2,0,key,{},0});
     const int width=invoke<int>(api.width),height=invoke<int>(api.height);
     if(width<200||height<160)return false;
-    const int row_h=std::clamp(height/16,32,56),columns=width>=700?3:2;
-    const int per_column=std::max(2,std::min(12,(height-96)/row_h));
+    const int row_h=std::clamp(height/20,28,40),columns=width>=700?3:2;
+    const int max_rows=std::max(1,std::min(10,(height*3/4-row_h)/row_h));
+    const int per_column=std::min(max_rows,std::max(1,static_cast<int>((all.size()+columns-1)/columns)));
     const int capacity=columns*per_column,pages=std::max(1,static_cast<int>((all.size()+capacity-1)/capacity));
     popup_page=std::min(popup_page,pages-1);
-    const int col_w=std::min(350,(width-32)/columns),total_w=columns*col_w;
+    const int col_w=std::min(220,(width*3/4)/columns),total_w=columns*col_w;
     popup_rect={(width-total_w)/2,std::max(8,(height-(per_column+1)*row_h)/2),total_w,(per_column+1)*row_h};
     rectangle(popup_rect,color(23,35,75,250));rows.clear();
     for(int i=0;i<capacity;++i){int index=popup_page*capacity+i;if(index>=static_cast<int>(all.size()))break;
