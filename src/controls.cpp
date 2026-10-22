@@ -102,7 +102,7 @@ struct Api {
  H slot_id{},slot_style{},slot_kind{},slot_multi{},active_control{},active_slot{},action_binding{},display_options{};
  H gui_active{},gui_edit{},edit_enabled{},gui_editor{},gui_runtime{},ui_open{};
  H manager_instance{},cursor_id{},cursor_pos{},cursor_down{},cursor_old{},cursor_ignore{},cursor_world{},cursor_layer{},group_capture{};
- H text{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
+ H rect{},text{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
 } api;
 std::vector<patch_hook_id_t> hooks;
 unsigned long long tick=0;
@@ -198,31 +198,7 @@ std::string setting_slot(H obj){const int index=setting_index(obj);auto slot=act
 bool contains(Rect r,float x,float y){return r.w>0&&r.h>0&&x>=r.x&&y>=r.y&&x<r.x+r.w&&y<r.y+r.h;}
 Color color(int r,int g,int b,int a=255){return {static_cast<unsigned char>(a),static_cast<unsigned char>(b),static_cast<unsigned char>(g),static_cast<unsigned char>(r)};}
 void rectangle(Rect r,Color c){auto sb=read<H>(api.batch);if(!sb||r.w<=0||r.h<=0)return;
-    gui::images::solid(sb,r.x,r.y,r.w,r.h,&c);
-}
-void inset(Rect& r,int amount){r.x+=amount;r.y+=amount;r.w-=amount*2;r.h-=amount*2;}
-void pixel_fill(Rect r,Color c,int cut=3){
-    cut=std::min(cut,std::min(r.w,r.h)/2);
-    rectangle({r.x+cut,r.y,r.w-cut*2,r.h},c);
-    rectangle({r.x,r.y+cut,r.w,r.h-cut*2},c);
-}
-void frame(Rect r,Color edge,Color fill,Color light,Color shade){
-    pixel_fill(r,edge);inset(r,1);pixel_fill(r,light,2);inset(r,1);pixel_fill(r,fill,1);
-    // The raised blue surface uses a small fixed gradient without a panel texture tint.
-    constexpr int bands=12;
-    for(int i=0;i<bands;++i){
-        const int top=r.y+1+(r.h-2)*i/bands,bottom=r.y+1+(r.h-2)*(i+1)/bands;
-        auto channel=[&](int value,int target){return value+(target-value)*i/(bands*2);};
-        rectangle({r.x+1,top,r.w-2,bottom-top},color(channel(fill.r,shade.r),channel(fill.g,shade.g),channel(fill.b,shade.b),fill.a));
-    }
-    rectangle({r.x+1,r.y+r.h-2,r.w-2,2},shade);
-}
-void arrow(Rect r,bool right,bool enabled){
-    const int size=std::max(3,std::min(6,r.h/3));
-    const Color ink=enabled?color(227,237,255):color(106,121,162);
-    const int cx=r.x+r.w/2,cy=r.y+r.h/2;
-    for(int i=0;i<size;++i){int px=right?cx-size/2+i:cx+size/2-i;
-        rectangle({px,cy-size+i+1,1,(size-i)*2-1},ink);}
+    using Fn=void(*)(void*,Rect,Color);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.rect));if(fn)fn(sb,r,c);
 }
 void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=read<H>(api.batch);if(!sb||value.empty())return;
     size_t chars=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)++chars;
@@ -338,63 +314,55 @@ void picker_postfix(H obj,void**,void*,const patch_method_signature_t*){
     const std::string& selected_module=module_ids[popup_module];
     const int action_count=module_action_count(selected_module),pages=std::max(1,(action_count+3)/4);
     popup_page=std::clamp(popup_page,0,pages-1);
-    const int width_px=std::min(width-16,std::max(420,width*50/100));
-    const int x=(width-width_px)/2,row_h=std::clamp(width_px/12+2,26,66),header_h=std::clamp(width_px/17,24,42),gap=6;
-    const int first_action=popup_page*4;
-    const int dock_h=8+header_h+gap+row_h*2+8;
+    const int width_px=std::min(width-16,std::max(420,width*52/100));
+    const int x=(width-width_px)/2,row_h=std::clamp(height/18,22,30),header_h=36,footer_h=28;
+    const int first_action=popup_page*4,visible_actions=std::min(4,std::max(0,action_count-first_action));
+    const int content_rows=(visible_actions+1)/2;
+    const int dock_h=8+header_h+content_rows*row_h+8+footer_h+4;
     const int y=std::max(8,height-dock_h-8);
     popup_rect={x,y,width_px,dock_h};
     popup_tick=tick;
     rows.clear();
-    // Deep navy, cobalt frame and bright blue cards follow Terraria's pixel UI palette.
-    frame(popup_rect,color(5,9,24,248),color(37,52,111),color(91,112,199),color(11,20,51));
-    Rect inner=popup_rect;inset(inner,3);
-    frame(inner,color(10,18,46),color(20,31,70,248),color(56,77,151),color(8,14,37));
-    Rect header{x+7,y+6,width_px-14,header_h};
-    frame(header,color(8,14,34),color(27,42,89),color(83,105,185),color(13,23,53));
+    rectangle(popup_rect,color(23,35,75,250));
+    Rect header{x+4,y+3,width_px-8,header_h};rectangle(header,color(32,58,84));
+    const int nav_w=header_h-4;
     const int module_count=static_cast<int>(module_ids.size());
-    const int header_y=header.y+3,header_button=header_h-6;
-    auto header_button_draw=[&](Rect r,const std::string& label,bool enabled){
-        frame(r,enabled?color(8,16,39):color(13,22,47),enabled?color(45,72,126):color(31,44,75),
-              enabled?color(102,128,209):color(57,69,103),color(20,34,66));
-        arrow(r,label==">",enabled);
-    };
-    const bool can_switch=module_count>1;
-    Rect module_prev{x+10,header_y,header_button,header_button};
-    header_button_draw(module_prev,"<",can_switch);
-    Choice module_prev_choice{can_switch?4:0,-1,{},module_prev,popup_epoch};
-    if(can_switch)rows.push_back(module_prev_choice);
-    const int module_next_x=x+width_px*53/100;
-    Rect module_title_rect{x+module_prev.w+18,header.y+2,module_next_x-(x+module_prev.w+24),header_h-4};
-    text(module_title(selected_module),module_title_rect,color(244,247,255),true);
-    Rect module_next{module_next_x,header_y,header_button,header_button};
-    header_button_draw(module_next,">",can_switch);
-    Choice module_next_choice{can_switch?4:0,1,{},module_next,popup_epoch};
-    if(can_switch)rows.push_back(module_next_choice);
-    text(std::to_string(action_count)+" 个动作",{x+width_px*59/100,header.y+2,width_px*13/100,header_h-4},color(183,198,239),true);
-    const int page_prev_x=x+width_px*73/100;
-    Rect page_prev{page_prev_x,header_y,header_button,header_button};
-    const bool has_prev=popup_page>0,has_next=popup_page+1<pages;
-    header_button_draw(page_prev,"<",has_prev);
-    Choice page_prev_choice{has_prev?3:0,-1,{},page_prev,popup_epoch};
-    if(has_prev)rows.push_back(page_prev_choice);
-    Rect page_label{x+width_px*78/100,header.y+2,width_px*12/100,header_h-4};
-    text(std::to_string(popup_page+1)+"/"+std::to_string(pages),page_label,color(235,241,255),true);
-    Rect page_next{x+width_px*91/100,header_y,header_button,header_button};
-    header_button_draw(page_next,">",has_next);
-    Choice page_next_choice{has_next?3:0,1,{},page_next,popup_epoch};
-    if(has_next)rows.push_back(page_next_choice);
+    for(int direction=0;direction<2;++direction){
+        const int delta=direction==0?-1:1;
+        const bool enabled=module_count>1;
+        Rect r=direction==0?Rect{x+7,y+5,nav_w,nav_w}:Rect{x+width_px-nav_w-7,y+5,nav_w,nav_w};
+        Choice choice{enabled?4:0,delta,{},r,popup_epoch};
+        rectangle(r,enabled?color(54,83,117):color(39,57,78));
+        text(direction==0?"‹":"›",r,enabled?color(248,222,135):color(117,132,150),true);
+        if(enabled)rows.push_back(choice);
+    }
+    text(module_title(selected_module)+"  "+std::to_string(popup_module+1)+"/"+std::to_string(module_count),
+         {x+nav_w+18,y+5,width_px-2*nav_w-36,nav_w},color(240,244,255),true);
     int index=0;
     for(auto& [key,a]:state.actions){
         if(a.owner!=selected_module)continue;
         const int local=index++-first_action;
         if(local<0||local>=4)continue;
-        const int col_w=(width_px-22)/2;
-        Rect r{x+7+(local%2)*(col_w+8),header.y+header_h+gap+(local/2)*row_h,col_w,row_h-3};
+        Rect r{x+(local%2)*(width_px/2)+4,y+header_h+(local/2)*row_h+2,width_px/2-8,row_h-4};
         Choice choice{2,0,key,r,popup_epoch};
-        frame(r,color(7,15,37),color(48,78,137),color(115,140,220),color(25,43,83));
-        text(a.name,{r.x+10,r.y+1,r.w-20,r.h-2},color(249,250,255),true);
-        rows.push_back(choice);
+        rectangle(r,color(44,82,99,250));
+        Rect badge{r.x+4,r.y+3,row_h-10,row_h-10};rectangle(badge,color(75,112,150));
+        size_t first=0;if(!a.name.empty()){unsigned char c=static_cast<unsigned char>(a.name[0]);first=c<0x80?1:c<0xe0?2:c<0xf0?3:4;}
+        text(a.name.substr(0,first),badge,color(248,222,135),true);
+        text(a.name,{badge.x+badge.w+4,r.y,r.w-badge.w-12,r.h},color(240,244,255));rows.push_back(choice);
+    }
+    {
+        for(int i=0;i<2;++i){
+            const int delta=i==0?-1:1;const bool enabled=i==0?popup_page>0:popup_page+1<pages;
+            Rect r=i==0?Rect{x+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4}:
+                          Rect{x+width_px*58/100+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4};
+            Choice choice{enabled?3:0,delta,{},r,popup_epoch};
+            rectangle(r,enabled?color(42,66,100):color(36,53,74));
+            text(i==0?"‹ 上一页":"下一页 ›",r,enabled?color(240,244,255):color(117,132,150),true);
+            if(enabled)rows.push_back(choice);
+        }
+        text(std::to_string(popup_page+1)+"/"+std::to_string(pages),
+             {x+width_px*42/100,y+dock_h-footer_h-2,width_px*16/100,footer_h-4},color(240,244,255),true);
     }
 }
 
@@ -642,7 +610,7 @@ void resolve(){
     api.active_control=field(api.panel,"ActiveControl");api.active_slot=field(api.panel,"ActiveSlotConfig");api.action_binding=field(api.setting,"ActionBinding");
     api.display_options=field(type("GUIPulldownSetting"),"displayOptions");api.gui_active=field(api.gui,"Active");api.gui_edit=field(api.gui,"GUIInterfaceEdit");api.gui_editor=field(api.gui,"GUIVirtualInputControllerEdit");api.edit_enabled=field(api.interface_edit,"Enabled");api.gui_runtime=field(api.gui,"GUIVirtualInputController");api.ui_open=method(type("GUIVirtualInputController"),"get_InGameUIOpen",0);
     api.manager_instance=field(api.manager,"Instance");api.cursor_id=field(api.cursor,"Id");api.cursor_pos=field(api.cursor,"Position");api.cursor_down=field(api.cursor,"Down");api.cursor_old=field(api.cursor,"WasDown");api.cursor_ignore=field(api.cursor,"Ignore");api.cursor_world=field(api.cursor,"IgnoreForWorld");api.cursor_layer=field(api.cursor,"InputLayer");api.group_capture=method(type("GUIVirtualInputController"),"UpdateCursorGroupControl",7);
-    api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
+    api.rect=method(type("Utils","Terraria"),"DrawInvBG",3);api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
     api.adjust=method(type("XNAUnityRunner"),"AdjustRealScreenForUI",1);api.count=method(api.manager,"GetNumCursors",0);api.at=method(api.manager,"GetCursor",1);
     api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);api.is_over_options=method(api.setting,"IsOverOptions",1);
     api.add_undo=method(api.interface_edit,"AddControlUndo",0);api.has_undo=method(api.interface_edit,"HasUndo",0);api.has_redo=method(api.interface_edit,"HasRedo",0);
