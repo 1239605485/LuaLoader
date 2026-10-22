@@ -35,6 +35,7 @@ void invalidate(const std::string& key,bool removing=false);
 void refresh_modules();
 #endif
 std::filesystem::path storage;
+unsigned long long icon_serial=0;
 bool ready=false;
 std::string reason="native touch bindings require Android arm64";
 void save(){
@@ -58,10 +59,29 @@ int add(lua_State* L){
     if(!State::valid_id(id))return luaL_error(L,"control id must be 1-64 ASCII letters, digits, _, - or .");
     lua_getfield(L,1,"name");std::string name=luaL_checkstring(L,-1);lua_pop(L,1);
     if(name.empty()||name.size()>128)return luaL_error(L,"control name must be 1-128 UTF-8 bytes");
+    lua_getfield(L,1,"icon");std::string icon_path;
+    if(!lua_isnil(L,-1)){
+        luaL_checktype(L,-1,LUA_TSTRING);size_t length=0;
+        const char* path=lua_tolstring(L,-1,&length);
+        if(length>512||std::memchr(path,0,length))return luaL_error(L,"control icon path must be at most 512 bytes without NUL");
+        icon_path.assign(path,length);
+    }
+    lua_pop(L,1);
+    lua_getfield(L,1,"show_label");bool show_label=true;
+    if(!lua_isnil(L,-1)){luaL_checktype(L,-1,LUA_TBOOLEAN);show_label=lua_toboolean(L,-1);}
+    lua_pop(L,1);
     auto h=owner(L);auto key=State::key(h->mod_id,id);
     if(state.actions.count(key))return luaL_error(L,"control already registered: %s",id.c_str());
     if(state.actions.size()>=256)return luaL_error(L,"native control registry is full");
-    state.actions.emplace(key,Action{key,h->mod_id,id,name});
+    Action action{key,h->mod_id,id,name};action.show_label=show_label;
+    if(!icon_path.empty()){
+        // Separate cache ownership prevents GUI image releases or another action
+        // from invalidating this icon. A new registration gets fresh file bytes.
+        action.icon_owner=h->mod_id+"@controls."+id+"."+std::to_string(++icon_serial);
+        action.icon=gui::images::request(action.icon_owner,h->private_dir,icon_path);
+        if(action.icon.empty()){action.icon_owner.clear();LOG_WARN("[controls] invalid icon path for {}; using its name",id);}
+    }
+    state.actions.emplace(key,std::move(action));
 #if defined(__ANDROID__) && defined(__aarch64__)
     refresh_modules();
 #endif
@@ -208,6 +228,14 @@ void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=rea
     using Fn=Vec(*)(void*,void*,Vec,Color,float,float,float,int);
     auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));if(fn)fn(sb,s,{x,r.y+(r.h-28*scale)/2},c,scale,0,0,-1);
     patchlib_free(s);
+}
+bool action_icon(const Action& action,Rect r){
+    if(action.icon.empty()||r.w<=0||r.h<=0)return false;
+    auto sb=read<H>(api.batch);if(!sb)return false;
+    const Color tint=action.enabled?color(255,255,255):color(130,135,150);
+    gui::images::draw(sb,action.icon,r.x,r.y,r.w,r.h,&tint,0,0,0,0,-1,0);
+    int width=0,height=0;
+    return gui::images::status(action.icon,width,height)=="ready";
 }
 Rect region(H layout){using Fn=Rect(*)(void*);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.get_region));return fn&&layout?fn(layout):Rect{};}
 void release_group_input(GroupInput& input){gui::images::release_object(input.binding_pin);gui::images::release_object(input.config_pin);}
@@ -359,7 +387,11 @@ void picker_postfix(H obj,void**,void*,const patch_method_signature_t*){
         if(local<0||local>=4)continue;
         Rect r{x+padding+(local%2)*(col_w+gap),header.y+header_h+gap+(local/2)*(row_h+gap),col_w,row_h};
         rectangle(r,color(44,82,99,250));
-        text(a.name,{r.x+8,r.y,r.w-16,r.h},color(240,244,255),true);
+        Rect label{r.x+8,r.y,r.w-16,r.h};
+        const int icon_size=std::min(r.h-12,r.w/3);
+        Rect icon{r.x+8,r.y+(r.h-icon_size)/2,icon_size,icon_size};
+        if(action_icon(a,icon)){label.x=icon.x+icon.w+6;label.w=r.x+r.w-8-label.x;}
+        text(a.name,label,color(240,244,255),true);
         rows.push_back({2,0,key,r,popup_epoch});
     }
 }
@@ -479,7 +511,16 @@ void quick_postfix(H,void** args,void*,const patch_method_signature_t*){
     if(!ready||!args||!args[1])return;
     auto a=state.find(draw.context.key);if(!a||!a->visible)return;
     Rect r=region(*static_cast<H*>(args[1]));if(r.w<=0||r.h<=0)return;
-    text(a->name,r,a->enabled?color(245,247,255):color(130,135,150),true);
+    Rect label=r,icon_area=r;
+    if(a->show_label){
+        const int label_h=std::min(22,std::max(12,r.h/3));
+        icon_area.h=std::max(0,r.h-label_h);
+        label.y+=icon_area.h;label.h=label_h;
+    }
+    const int icon_size=std::min(icon_area.w,icon_area.h)*3/4;
+    Rect icon{icon_area.x+(icon_area.w-icon_size)/2,icon_area.y+(icon_area.h-icon_size)/2,icon_size,icon_size};
+    const bool has_icon=action_icon(*a,icon);
+    if(!has_icon||a->show_label)text(a->name,has_icon?label:r,a->enabled?color(245,247,255):color(130,135,150),true);
     auto p=profile_key();
     if(draw.radial){
         const auto id=p+"\n"+draw.context.slot;
@@ -690,6 +731,9 @@ void shutdown(){
     hooks.clear();restore_render();clear_input();rows.clear();module_ids.clear();popup_module=0;drawing.clear();quick_drawing.clear();group_drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
 #endif
     ready=false;state.actions.clear();state.clear_history();state.backup.clear();state.clipboard.clear();state.has_backup=false;state.has_clipboard=false;
+}
+void append_image_owners(std::vector<std::string>& owners){
+    for(const auto& entry:state.actions)if(!entry.second.icon.empty())owners.push_back(entry.second.icon_owner);
 }
 void unregister_owner(lua_mod_handle_t* h){
     if(!h)return;

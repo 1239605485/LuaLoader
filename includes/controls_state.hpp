@@ -10,6 +10,8 @@ struct Action {
     std::string key, owner, id, name;
     bool enabled=true, visible=true, held=false;
     unsigned presses=0, releases=0;
+    std::string icon_owner, icon;
+    bool show_label=true;
 };
 using Slots=std::map<std::string,std::string>;
 using Bindings=std::map<std::string,Slots>;

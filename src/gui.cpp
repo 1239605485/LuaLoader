@@ -31,6 +31,7 @@
 // ============================================================================
 
 #include "gui.hpp"
+#include "controls.hpp"
 #include "gui_images.hpp"
 #include "gui_viewport.hpp"
 #include <deque>
@@ -2120,7 +2121,12 @@ namespace lualoader::gui {
                     break;
                 }
             }
-            if (!any_gui) {clear_text_cache();images::clear();g_windows.clear();g_headers.clear();g_edit=EditState{};ime::close();kbd::reset();g_scrolls.clear();g_active_scroll.clear();
+            std::vector<std::string> control_image_owners;
+            controls::append_image_owners(control_image_owners);
+            if (!any_gui) {clear_text_cache();
+                if(control_image_owners.empty())images::clear();
+                else{images::prune(control_image_owners);images::begin_frame();}
+                g_windows.clear();g_headers.clear();g_edit=EditState{};ime::close();kbd::reset();g_scrolls.clear();g_active_scroll.clear();
                 g_pointer_owner.clear();g_input_owner.clear();g_drag_id.clear();g_slider_active.clear();g_click_state.reset();g_render_owner.clear();g_mouse_down=g_prev_mouse_down=false;
 #if defined(__ANDROID__)
                 g_active_cursor_valid=false;g_captured_touches.clear();
@@ -2150,7 +2156,9 @@ namespace lualoader::gui {
 
             std::vector<std::string> owners;
             for(const auto &kv:core::lua_mod_handles)if(kv.second && kv.second->gui_ref!=LUA_NOREF)owners.push_back(kv.second->mod_id);
-            images::prune(owners);
+            auto image_owners=owners;
+            image_owners.insert(image_owners.end(),control_image_owners.begin(),control_image_owners.end());
+            images::prune(image_owners);
             auto owner_alive=[&owners](const std::string &key){for(const auto &id:owners)if(key.rfind(id+"#",0)==0)return true;return false;};
             if(g_edit.active && !owner_alive(g_edit.owner)){g_edit=EditState{};ime::close();kbd::reset();}
             for(auto it=g_scrolls.begin();it!=g_scrolls.end();)if(!owner_alive(it->first))it=g_scrolls.erase(it);else ++it;

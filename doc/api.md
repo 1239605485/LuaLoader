@@ -736,7 +736,7 @@ todo_list = { "setup" }
 | 接口 | 说明 |
 | --- | --- |
 | `mod.controls.available()` → `bool, reason` | 原版布局接入是否成功；失败时返回接口/平台原因。 |
-| `mod.controls.register { id="skill", name="骷髅投骨" }` → `id` | 注册动作；同 Mod 内 id 唯一。id 为 1–64 个英数字、`_`、`-`、`.`；名称不超过 128 UTF-8 字节。 |
+| `mod.controls.register { id="skill", name="骷髅投骨", icon="icons/skill.png", show_label=true }` → `id` | 注册动作；`icon`、`show_label` 可省略。id 为 1–64 个英数字、`_`、`-`、`.`，同 Mod 内唯一；名称不超过 128 UTF-8 字节。 |
 | `mod.controls.unregister(id)` → `bool` | 注销动作；保留用户绑定记录供重新加载使用。 |
 | `mod.controls.down(id)` → `bool` | 是否仍按住；同一动作允许多个手指/多个绑定按钮，最后一个松开后才结束。 |
 | `mod.controls.pressed(id)` → `bool` | 消费一次按下事件。连续按住不会逐帧返回 true。 |
@@ -776,5 +776,19 @@ end
 - 原版的放弃修改、撤销/重做、复制/粘贴及恢复默认入口会同步模组映射。仍需 Android 实测这些流程。
 - 单个按钮关闭多点触控时只接收首个手指；开启时多个触点合并为同一动作的按住状态。
 - 原版分享码不会包含 Loader 的独立映射文件；跨设备分享布局后需重新选择模组动作。
-- 当前按钮沿用原版背景并绘制动作名称，不接收独立 PNG 图标。
+- 按钮沿用原版背景。`icon` 是相对 Mod 私有目录的 PNG 路径（不超过 512 字节），例如将 `Resources/icons/skill.png` 部署为 `icons/skill.png` 后注册该相对路径。拒绝绝对路径、越界路径和非 `.png` 文件；不接受图片句柄或原版物品 ID。
+- `icon` 省略或为空时保持原来的名称按钮。图片尚未加载、文件缺失、解码失败时显示完整名称；建议使用 64×64 或 128×128 的透明 PNG。图片等比缩放，不拉伸。
+- 动作选择列表始终显示名称，图标加载后出现在名称左侧；`show_label` 仅控制游戏内按键文字，默认 `true`。设为 `false` 时，图片成功加载后只显示图标，图片失败时仍回退为名称。
+- 图标不依赖 `mod.on_gui`。Loader 负责图片缓存与按帧上传限制，注销/卸载后在绘制线程清理；重新注册使用新的缓存归属，避免复用旧图。不会改变按键绑定配置格式。
+
+带图标的注册示例（旧注册写法仍然有效）：
+
+```lua
+mod.controls.register {
+    id = "skill",
+    name = "怪物技能",
+    icon = "icons/skill.png",
+    show_label = false,
+}
+```
 - `available()` 成功和宿主模拟测试通过不等于 Android 游戏实测通过；绘制、绑定、缩放、保存重启需要设备验证。
