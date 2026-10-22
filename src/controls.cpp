@@ -315,54 +315,52 @@ void picker_postfix(H obj,void**,void*,const patch_method_signature_t*){
     const int action_count=module_action_count(selected_module),pages=std::max(1,(action_count+3)/4);
     popup_page=std::clamp(popup_page,0,pages-1);
     const int width_px=std::min(width-16,std::max(420,width*52/100));
-    const int x=(width-width_px)/2,row_h=std::clamp(height/18,22,30),header_h=36,footer_h=28;
-    const int first_action=popup_page*4,visible_actions=std::min(4,std::max(0,action_count-first_action));
-    const int content_rows=(visible_actions+1)/2;
-    const int dock_h=8+header_h+content_rows*row_h+8+footer_h+4;
+    const int padding=8,gap=8;
+    const int header_h=std::clamp(width_px/16,32,42);
+    const int row_h=std::min(std::clamp(width_px/11+8,40,64),(height-header_h-padding*2-gap*2-16)/2);
+    const int x=(width-width_px)/2,dock_h=padding*2+header_h+gap+row_h*2+gap;
     const int y=std::max(8,height-dock_h-8);
+    const int first_action=popup_page*4;
     popup_rect={x,y,width_px,dock_h};
     popup_tick=tick;
     rows.clear();
     rectangle(popup_rect,color(23,35,75,250));
-    Rect header{x+4,y+3,width_px-8,header_h};rectangle(header,color(32,58,84));
-    const int nav_w=header_h-4;
+    Rect header{x+padding,y+padding,width_px-padding*2,header_h};
+    rectangle(header,color(32,58,84));
+    const int nav_w=header_h-8,nav_y=header.y+4;
+    const int module_w=header.w*58/100;
     const int module_count=static_cast<int>(module_ids.size());
     for(int direction=0;direction<2;++direction){
         const int delta=direction==0?-1:1;
         const bool enabled=module_count>1;
-        Rect r=direction==0?Rect{x+7,y+5,nav_w,nav_w}:Rect{x+width_px-nav_w-7,y+5,nav_w,nav_w};
-        Choice choice{enabled?4:0,delta,{},r,popup_epoch};
+        Rect r{direction==0?header.x+4:header.x+module_w-nav_w-4,nav_y,nav_w,nav_w};
         rectangle(r,enabled?color(54,83,117):color(39,57,78));
-        text(direction==0?"‹":"›",r,enabled?color(248,222,135):color(117,132,150),true);
-        if(enabled)rows.push_back(choice);
+        text(direction==0?"<":">",r,enabled?color(248,222,135):color(117,132,150),true);
+        if(enabled)rows.push_back({4,delta,{},r,popup_epoch});
     }
     text(module_title(selected_module)+"  "+std::to_string(popup_module+1)+"/"+std::to_string(module_count),
-         {x+nav_w+18,y+5,width_px-2*nav_w-36,nav_w},color(240,244,255),true);
+         {header.x+nav_w+8,header.y+4,module_w-nav_w*2-16,nav_w},color(240,244,255),true);
+    const int page_x=header.x+module_w+gap,page_w=header.w-module_w-gap;
+    for(int direction=0;direction<2;++direction){
+        const int delta=direction==0?-1:1;
+        const bool enabled=direction==0?popup_page>0:popup_page+1<pages;
+        Rect r{direction==0?page_x:page_x+page_w-nav_w-4,nav_y,nav_w,nav_w};
+        rectangle(r,enabled?color(42,66,100):color(36,53,74));
+        text(direction==0?"<":">",r,enabled?color(240,244,255):color(117,132,150),true);
+        if(enabled)rows.push_back({3,delta,{},r,popup_epoch});
+    }
+    text(std::to_string(popup_page+1)+"/"+std::to_string(pages),
+         {page_x+nav_w+4,nav_y,page_w-nav_w*2-12,nav_w},color(240,244,255),true);
+    const int col_w=(width_px-padding*2-gap)/2;
     int index=0;
     for(auto& [key,a]:state.actions){
         if(a.owner!=selected_module)continue;
         const int local=index++-first_action;
         if(local<0||local>=4)continue;
-        Rect r{x+(local%2)*(width_px/2)+4,y+header_h+(local/2)*row_h+2,width_px/2-8,row_h-4};
-        Choice choice{2,0,key,r,popup_epoch};
+        Rect r{x+padding+(local%2)*(col_w+gap),header.y+header_h+gap+(local/2)*(row_h+gap),col_w,row_h};
         rectangle(r,color(44,82,99,250));
-        Rect badge{r.x+4,r.y+3,row_h-10,row_h-10};rectangle(badge,color(75,112,150));
-        size_t first=0;if(!a.name.empty()){unsigned char c=static_cast<unsigned char>(a.name[0]);first=c<0x80?1:c<0xe0?2:c<0xf0?3:4;}
-        text(a.name.substr(0,first),badge,color(248,222,135),true);
-        text(a.name,{badge.x+badge.w+4,r.y,r.w-badge.w-12,r.h},color(240,244,255));rows.push_back(choice);
-    }
-    {
-        for(int i=0;i<2;++i){
-            const int delta=i==0?-1:1;const bool enabled=i==0?popup_page>0:popup_page+1<pages;
-            Rect r=i==0?Rect{x+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4}:
-                          Rect{x+width_px*58/100+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4};
-            Choice choice{enabled?3:0,delta,{},r,popup_epoch};
-            rectangle(r,enabled?color(42,66,100):color(36,53,74));
-            text(i==0?"‹ 上一页":"下一页 ›",r,enabled?color(240,244,255):color(117,132,150),true);
-            if(enabled)rows.push_back(choice);
-        }
-        text(std::to_string(popup_page+1)+"/"+std::to_string(pages),
-             {x+width_px*42/100,y+dock_h-footer_h-2,width_px*16/100,footer_h-4},color(240,244,255),true);
+        text(a.name,{r.x+8,r.y,r.w-16,r.h},color(240,244,255),true);
+        rows.push_back({2,0,key,r,popup_epoch});
     }
 }
 
