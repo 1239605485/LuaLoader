@@ -229,11 +229,26 @@ struct ControlText {H value=nullptr;unsigned int pin=0;unsigned long long used=0
 std::unordered_map<std::string,ControlText> control_text_cache;
 unsigned long long control_text_clock=0;
 void clear_control_text_cache(){for(auto& item:control_text_cache){if(item.second.pin)gui::images::release_object(item.second.pin);if(item.second.value)patchlib_free(item.second.value);}control_text_cache.clear();control_text_clock=0;}
-H cached_control_text(const std::string& value){
+// One diagnostic per condition; never write logs on every rendered frame.
+void control_text_diagnostic(unsigned bit,const char* message){
+    static unsigned reported=0;if(reported&bit)return;reported|=bit;
+    LOG_INFO("[controls-text] {}",message);
+    if(!storage.empty()){
+        std::ofstream out(storage.parent_path()/"controls_text_runtime.log",std::ios::app);
+        if(out)out<<"[controls-text] "<<message<<'\n';
+    }
+}
+H cached_control_text(const std::string& value,bool& temporary){
+    temporary=false;
     auto found=control_text_cache.find(value);if(found!=control_text_cache.end()){found->second.used=++control_text_clock;return found->second.value;}
-    H string=patchlib_string_create(value.c_str());if(!string)return nullptr;
+    H string=patchlib_string_create(value.c_str());if(!string){control_text_diagnostic(1,"string creation failed");return nullptr;}
     ControlText entry;entry.value=string;entry.used=++control_text_clock;entry.pin=gui::images::retain_object(string);
-    if(!entry.pin){patchlib_free(string);return nullptr;}
+    if(!entry.pin){
+        // Match gui.cpp: draw synchronously, but never cache an unrooted string.
+        temporary=true;
+        control_text_diagnostic(2,"GC handle unavailable; using a temporary string for this draw");
+        return string;
+    }
     if(control_text_cache.size()>=256){auto oldest=control_text_cache.begin();for(auto it=control_text_cache.begin();it!=control_text_cache.end();++it)if(it->second.used<oldest->second.used)oldest=it;gui::images::release_object(oldest->second.pin);patchlib_free(oldest->second.value);control_text_cache.erase(oldest);}
     control_text_cache.emplace(value,entry);return string;
 }
@@ -241,12 +256,15 @@ void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=rea
     float estimated_width=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)estimated_width+=ch<0x80?14.0f:26.0f;
     float scale=std::min(0.85f,(r.w-12)/std::max(1.0f,estimated_width));
     scale=std::max(0.15f,scale);float x=center?r.x+r.w/2.0f:static_cast<float>(r.x+8);
-    H s=cached_control_text(value);if(!s)return;
+    bool temporary=false;H s=cached_control_text(value,temporary);if(!s)return;
+    struct TemporaryText{H value;bool owned;~TemporaryText(){if(owned)patchlib_free(value);}} guard{s,temporary};
     // Match LuaLoader's Android GUI renderer: its verified native delegate
     // call avoids the reflection/struct-return path that aborts on device.
     using Fn=Vec(*)(void*,void*,Vec,Color,float,float,float,int);
     auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));
-    if(fn)fn(sb,s,{x,r.y+r.h/2.0f},c,scale,center?0.5f:0.0f,0.5f,-1);
+    if(!fn){control_text_diagnostic(4,"DrawBorderString native pointer unavailable");return;}
+    fn(sb,s,{x,r.y+r.h/2.0f},c,scale,center?0.5f:0.0f,0.5f,-1);
+    control_text_diagnostic(8,"DrawBorderString returned; if labels remain invisible, check rendering order/state");
 }
 Rect region(H layout){using Fn=Rect(*)(void*);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.get_region));return fn&&layout?fn(layout):Rect{};}
 void release_group_input(GroupInput& input){gui::images::release_object(input.binding_pin);gui::images::release_object(input.config_pin);}
