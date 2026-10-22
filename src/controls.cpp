@@ -108,6 +108,8 @@ std::vector<patch_hook_id_t> hooks;
 unsigned long long tick=0;
 constexpr int unbound=28; // supplied PE 1.4.5.8 ContolType.Count
 constexpr int carrier=27; // safe, existing ArmorSetAbility, never persisted for mods
+// QuickActionControl has a different enum order from the saved layout actions.
+constexpr int quick_unbound=35;
 struct Region{Rect rect;std::string key,profile,slot;unsigned long long tick=0;bool multi=true;};
 std::map<std::string,Region> regions;
 struct Choice{int kind=0,value=0;std::string key;Rect rect;unsigned epoch=0;};
@@ -131,7 +133,7 @@ struct GroupCarrier{H array;size_t index;};
 std::vector<GroupCarrier> render_groups;
 struct GroupDraw{std::vector<DrawContext> entries;size_t next=0,restore_from=0;};
 std::vector<GroupDraw> group_drawing;
-struct QuickDraw{DrawContext context;bool radial=false,pressed=false;};
+struct QuickDraw{DrawContext context;bool radial=false,pressed=false,substituted=false;int original_action=0;};
 std::vector<QuickDraw> quick_drawing;
 std::set<std::string> normal_held;
 struct RadialHeld{std::string key;unsigned long long tick;};
@@ -501,6 +503,11 @@ bool quick_prefix(H,void** args,const patch_method_signature_t*,void*){
     quick_drawing.push_back(draw);auto& current=quick_drawing.back();
     if(!args)return false;
     auto a=state.find(current.context.key);if(!a)return false;
+    // ignoreChecks/ignoreIcon do not bypass the original action switch. In the
+    // supplied device binary ArmorSetAbility reads LocalPlayer before either
+    // flag is used, and can throw across the kernel's C/libffi hook boundary.
+    // Unbound + ignoreIcon reaches the native backing draw without that logic.
+    if(args[0]){current.original_action=*static_cast<int*>(args[0]);current.substituted=true;*static_cast<int*>(args[0])=quick_unbound;}
     current.pressed=current.radial&&args[2]&&*static_cast<bool*>(args[2]);
     if(!current.radial&&args[2])*static_cast<bool*>(args[2])=a->held;
     if(args[4])*static_cast<bool*>(args[4])=true;
@@ -510,6 +517,7 @@ bool quick_prefix(H,void** args,const patch_method_signature_t*,void*){
 void quick_postfix(H,void** args,void*,const patch_method_signature_t*){
     if(quick_drawing.empty())return;
     const auto draw=quick_drawing.back();quick_drawing.pop_back();
+    if(draw.substituted&&args&&args[0])*static_cast<int*>(args[0])=draw.original_action;
     if(!ready||!args||!args[1])return;
     auto a=state.find(draw.context.key);if(!a||!a->visible)return;
     Rect r=region(*static_cast<H*>(args[1]));if(r.w<=0||r.h<=0)return;
