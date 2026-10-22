@@ -4,6 +4,7 @@
 #include "controls_state.hpp"
 #include "logger.hpp"
 #include "json.hpp"
+#include "gui_images.hpp"
 #include <cmath>
 #include <array>
 #include <cctype>
@@ -97,11 +98,11 @@ struct Vec{float x,y;};struct Rect{int x=0,y=0,w=0,h=0;};struct Color{unsigned c
 static_assert(sizeof(Vec)==8&&sizeof(Rect)==16&&sizeof(Color)==4);
 struct Api {
  H main{},styles{},binding{},slot{},slot_type{},panel{},setting{},quick{},editor{},interface_edit{},cursor{},manager{},gui{};
- H batch{},width{},height{},menu{},menu_getter{},styles_instance{},active_profile{},profile_id{},profile_controls{},binding_slot{},binding_action{};
+ H batch{},width{},height{},menu{},menu_getter{},styles_instance{},active_profile{},profile_id{},profile_controls{},binding_slot{},binding_action{},binding_groups{};
  H slot_id{},slot_style{},slot_kind{},slot_multi{},active_control{},active_slot{},action_binding{},display_options{};
  H gui_active{},gui_edit{},edit_enabled{},gui_editor{},gui_runtime{},ui_open{};
- H manager_instance{},cursor_id{},cursor_pos{},cursor_down{},cursor_old{},cursor_ignore{},cursor_world{};
- H rect{},text{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
+ H manager_instance{},cursor_id{},cursor_pos{},cursor_down{},cursor_old{},cursor_ignore{},cursor_world{},cursor_layer{},group_capture{};
+ H text{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
 } api;
 std::vector<patch_hook_id_t> hooks;
 unsigned long long tick=0;
@@ -126,10 +127,23 @@ struct DrawContext{std::string key,slot;bool multi=true;};
 std::vector<DrawContext> drawing;
 unsigned runtime_depth=0;
 std::set<H> render_bindings;
+struct GroupCarrier{H array;size_t index;};
+std::vector<GroupCarrier> render_groups;
+struct GroupDraw{std::vector<DrawContext> entries;size_t next=0,restore_from=0;};
+std::vector<GroupDraw> group_drawing;
+struct QuickDraw{DrawContext context;bool radial=false,pressed=false;};
+std::vector<QuickDraw> quick_drawing;
+std::set<std::string> normal_held;
+struct RadialHeld{std::string key;unsigned long long tick;};
+std::map<std::string,RadialHeld> radial_held;
+struct GroupInput{H binding,config;int slot;std::string profile;unsigned long long tick;unsigned binding_pin=0,config_pin=0;};
+std::map<std::string,GroupInput> group_inputs;
 bool history_transition=false;
 bool selecting=false;
 std::vector<std::pair<std::string,std::string>> changes;
 void invalidate(const std::string& key,bool removing){
+    normal_held.erase(key);
+    for(auto i=radial_held.begin();i!=radial_held.end();)if(i->second.key==key)i=radial_held.erase(i);else ++i;
     for(auto& [id,claim]:claims)if((!claim.popup&&claim.region.key==key)||(removing&&claim.popup&&claim.choice.key==key))claim.cancelled=true;
     if(removing&&selected&&selected->key==key)selected.reset();
     for(auto it=regions.begin();it!=regions.end();)if(it->second.key==key)it=regions.erase(it);else ++it;
@@ -159,7 +173,18 @@ bool ui_blocked(){auto g=gui_object();auto c=g?read<H>(api.gui_runtime,g):nullpt
 H native_binding(const std::string& slot){auto p=profile();if(!p)return nullptr;auto arr=read<H>(api.profile_controls,p);if(!arr)return nullptr;
     for(size_t i=0,n=std::min<size_t>(patchlib_array_length(arr),2048);i<n;++i){H b=nullptr;patchlib_array_at(arr,i,&b);if(b&&string(read<H>(api.binding_slot,b))==slot)return b;}return nullptr;
 }
-std::string custom_binding(H b){if(!b)return {};int action=read<int>(api.binding_action,b);
+std::string group_slot(const std::string& slot,int index){return slot+"::group:"+std::to_string(index);}
+int setting_index(H obj){const int kind=read<int>(api.action_binding,obj);return kind==1?-1:kind>=2&&kind<=5?kind-2:-2;}
+std::string custom_binding(H b,int index=-1){if(!b)return {};
+    const auto slot=string(read<H>(api.binding_slot,b));
+    if(index>=0){
+        auto array=read<H>(api.binding_groups,b);int action=unbound;
+        if(!array||index>=4||static_cast<size_t>(index)>=patchlib_array_length(array)||!patchlib_array_at(array,index,&action))return {};
+        bool temporary=false;for(const auto& v:render_groups)if(v.array==array&&v.index==static_cast<size_t>(index)){temporary=true;break;}
+        if(action!=unbound&&!(temporary&&action==carrier))return {};
+        return state.binding(profile_key(),group_slot(slot,index));
+    }
+    int action=read<int>(api.binding_action,b);
     if(action!=unbound&&!(action==carrier&&render_bindings.count(b)))return {};
     return state.binding(profile_key(),string(read<H>(api.binding_slot,b)));
 }
@@ -167,24 +192,59 @@ std::string custom_slot(H slot){if(!slot)return {};auto style=read<H>(api.slot_s
     if(!style||read<int>(api.slot_kind,style)!=1)return {};
     return custom_binding(native_binding(string(read<H>(api.slot_id,slot))));
 }
-std::string active_key(){return custom_binding(read<H>(api.active_control));}
+std::string active_key(H obj=nullptr){const int index=obj?setting_index(obj):-1;return index==-2?std::string{}:custom_binding(read<H>(api.active_control),index);}
 std::string active_slot(){auto b=read<H>(api.active_control);return b?string(read<H>(api.binding_slot,b)):std::string{};}
+std::string setting_slot(H obj){const int index=setting_index(obj);auto slot=active_slot();return index>=0&&!slot.empty()?group_slot(slot,index):slot;}
 bool contains(Rect r,float x,float y){return r.w>0&&r.h>0&&x>=r.x&&y>=r.y&&x<r.x+r.w&&y<r.y+r.h;}
 Color color(int r,int g,int b,int a=255){return {static_cast<unsigned char>(a),static_cast<unsigned char>(b),static_cast<unsigned char>(g),static_cast<unsigned char>(r)};}
 void rectangle(Rect r,Color c){auto sb=read<H>(api.batch);if(!sb||r.w<=0||r.h<=0)return;
-    using Fn=void(*)(void*,Rect,Color);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.rect));if(fn)fn(sb,r,c);
+    gui::images::solid(sb,r.x,r.y,r.w,r.h,&c);
+}
+void inset(Rect& r,int amount){r.x+=amount;r.y+=amount;r.w-=amount*2;r.h-=amount*2;}
+void pixel_fill(Rect r,Color c,int cut=3){
+    cut=std::min(cut,std::min(r.w,r.h)/2);
+    rectangle({r.x+cut,r.y,r.w-cut*2,r.h},c);
+    rectangle({r.x,r.y+cut,r.w,r.h-cut*2},c);
+}
+void frame(Rect r,Color edge,Color fill,Color light,Color shade){
+    pixel_fill(r,edge);inset(r,1);pixel_fill(r,light,2);inset(r,1);pixel_fill(r,fill,1);
+    // The raised blue surface uses a small fixed gradient without a panel texture tint.
+    constexpr int bands=12;
+    for(int i=0;i<bands;++i){
+        const int top=r.y+1+(r.h-2)*i/bands,bottom=r.y+1+(r.h-2)*(i+1)/bands;
+        auto channel=[&](int value,int target){return value+(target-value)*i/(bands*2);};
+        rectangle({r.x+1,top,r.w-2,bottom-top},color(channel(fill.r,shade.r),channel(fill.g,shade.g),channel(fill.b,shade.b),fill.a));
+    }
+    rectangle({r.x+1,r.y+r.h-2,r.w-2,2},shade);
+}
+void arrow(Rect r,bool right,bool enabled){
+    const int size=std::max(3,std::min(6,r.h/3));
+    const Color ink=enabled?color(227,237,255):color(106,121,162);
+    const int cx=r.x+r.w/2,cy=r.y+r.h/2;
+    for(int i=0;i<size;++i){int px=right?cx-size/2+i:cx+size/2-i;
+        rectangle({px,cy-size+i+1,1,(size-i)*2-1},ink);}
 }
 void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=read<H>(api.batch);if(!sb||value.empty())return;
-    size_t chars=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)++chars;
-    float scale=std::min(0.85f,(r.w-12)/std::max(1.0f,chars*26.0f));
-    scale=std::max(0.15f,scale);float x=static_cast<float>(r.x+8);if(center)x=r.x+r.w/2.0f-chars*26.0f*scale/2;
+    float estimated_width=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)estimated_width+=ch<0x80?14.0f:26.0f;
+    float scale=std::min(0.85f,(r.w-12)/std::max(1.0f,estimated_width));
+    scale=std::max(0.15f,scale);float x=center?r.x+r.w/2.0f:static_cast<float>(r.x+8);
     auto s=patchlib_string_create(value.c_str());if(!s)return;
     using Fn=Vec(*)(void*,void*,Vec,Color,float,float,float,int);
-    auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));if(fn)fn(sb,s,{x,r.y+(r.h-28*scale)/2},c,scale,0,0,-1);
+    auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));if(fn)fn(sb,s,{x,r.y+r.h/2.0f},c,scale,center?0.5f:0.0f,0.5f,-1);
     patchlib_free(s);
 }
 Rect region(H layout){using Fn=Rect(*)(void*);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.get_region));return fn&&layout?fn(layout):Rect{};}
-void clear_input(){claims.clear();regions.clear();state.reset_input();}
+void release_group_input(GroupInput& input){gui::images::release_object(input.binding_pin);gui::images::release_object(input.config_pin);}
+void clear_input(){
+    claims.clear();regions.clear();for(auto& [id,input]:group_inputs)release_group_input(input);group_inputs.clear();
+    normal_held.clear();radial_held.clear();state.reset_input();
+}
+void sync_input(){
+    auto held=normal_held;
+    for(auto i=radial_held.begin();i!=radial_held.end();)if(tick-i->second.tick>1)i=radial_held.erase(i);else{held.insert(i->second.key);++i;}
+    if(in_menu()||editing()||ui_blocked())held.clear();
+    state.sync(held);
+}
 std::string module_title(const std::string& id){
     std::vector<std::string> parts;size_t start=0;
     while(start<=id.size()){
@@ -239,7 +299,7 @@ void choose(H obj,Choice choice){
         popup_module=(popup_module+choice.value+count)%count;popup_page=0;++popup_epoch;return;
     }
     if(choice.kind!=2||!state.find(choice.key))return;
-    auto slot=active_slot(),p=profile_key();if(slot.empty()||p.empty())return;
+    auto slot=setting_slot(obj),p=profile_key();if(slot.empty()||p.empty())return;
     auto edit=edit_object();if(edit)call(api.add_undo,edit); // participates in native undo/redo
     int value=unbound;void* args[]={&value};
     selecting=true;
@@ -263,75 +323,84 @@ bool picker_prefix(H obj,void**,const patch_method_signature_t*,void*){
     return false;
 }
 void picker_postfix(H obj,void**,void*,const patch_method_signature_t*){
-    if(state.actions.empty()||!read<bool>(api.display_options,obj)||read<int>(api.action_binding,obj)!=1){
+    const int binding_index=setting_index(obj);
+    if(state.actions.empty()||!read<bool>(api.display_options,obj)||binding_index==-2){
         if(obj==popup_owner)popup_closed(obj,nullptr,nullptr,nullptr);
         return;
     }
     auto config=read<H>(api.active_slot),style=config?read<H>(api.slot_style,config):nullptr;
-    if(!style||read<int>(api.slot_kind,style)!=1)return;
+    if(!style||read<int>(api.slot_kind,style)!=(binding_index<0?1:2))return;
     const int width=invoke<int>(api.width),height=invoke<int>(api.height);
     if(width<300||height<160||module_ids.empty())return;
-    const std::string context=profile_key()+"\n"+active_slot();
+    const std::string context=profile_key()+"\n"+setting_slot(obj);
     if(obj!=popup_owner||context!=popup_context){popup_owner=obj;popup_context=context;popup_page=0;popup_module=0;selected.reset();++popup_epoch;}
     popup_module=std::clamp(popup_module,0,static_cast<int>(module_ids.size())-1);
     const std::string& selected_module=module_ids[popup_module];
     const int action_count=module_action_count(selected_module),pages=std::max(1,(action_count+3)/4);
     popup_page=std::clamp(popup_page,0,pages-1);
-    const int width_px=std::min(width-16,std::max(420,width*52/100));
-    const int x=(width-width_px)/2,row_h=std::clamp(height/18,22,30),header_h=36,footer_h=28;
-    const int first_action=popup_page*4,visible_actions=std::min(4,std::max(0,action_count-first_action));
-    const int content_rows=(visible_actions+1)/2;
-    const int dock_h=8+header_h+content_rows*row_h+8+footer_h+4;
+    const int width_px=std::min(width-16,std::max(420,width*50/100));
+    const int x=(width-width_px)/2,row_h=std::clamp(width_px/12+2,26,66),header_h=std::clamp(width_px/17,24,42),gap=6;
+    const int first_action=popup_page*4;
+    const int dock_h=8+header_h+gap+row_h*2+8;
     const int y=std::max(8,height-dock_h-8);
     popup_rect={x,y,width_px,dock_h};
     popup_tick=tick;
     rows.clear();
-    rectangle(popup_rect,color(23,35,75,250));
-    Rect header{x+4,y+3,width_px-8,header_h};rectangle(header,color(32,58,84));
-    const int nav_w=header_h-4;
+    // Deep navy, cobalt frame and bright blue cards follow Terraria's pixel UI palette.
+    frame(popup_rect,color(5,9,24,248),color(37,52,111),color(91,112,199),color(11,20,51));
+    Rect inner=popup_rect;inset(inner,3);
+    frame(inner,color(10,18,46),color(20,31,70,248),color(56,77,151),color(8,14,37));
+    Rect header{x+7,y+6,width_px-14,header_h};
+    frame(header,color(8,14,34),color(27,42,89),color(83,105,185),color(13,23,53));
     const int module_count=static_cast<int>(module_ids.size());
-    for(int direction=0;direction<2;++direction){
-        const int delta=direction==0?-1:1;
-        const bool enabled=module_count>1;
-        Rect r=direction==0?Rect{x+7,y+5,nav_w,nav_w}:Rect{x+width_px-nav_w-7,y+5,nav_w,nav_w};
-        Choice choice{enabled?4:0,delta,{},r,popup_epoch};
-        rectangle(r,enabled?color(54,83,117):color(39,57,78));
-        text(direction==0?"‹":"›",r,enabled?color(248,222,135):color(117,132,150),true);
-        if(enabled)rows.push_back(choice);
-    }
-    text(module_title(selected_module)+"  "+std::to_string(popup_module+1)+"/"+std::to_string(module_count),
-         {x+nav_w+18,y+5,width_px-2*nav_w-36,nav_w},color(240,244,255),true);
+    const int header_y=header.y+3,header_button=header_h-6;
+    auto header_button_draw=[&](Rect r,const std::string& label,bool enabled){
+        frame(r,enabled?color(8,16,39):color(13,22,47),enabled?color(45,72,126):color(31,44,75),
+              enabled?color(102,128,209):color(57,69,103),color(20,34,66));
+        arrow(r,label==">",enabled);
+    };
+    const bool can_switch=module_count>1;
+    Rect module_prev{x+10,header_y,header_button,header_button};
+    header_button_draw(module_prev,"<",can_switch);
+    Choice module_prev_choice{can_switch?4:0,-1,{},module_prev,popup_epoch};
+    if(can_switch)rows.push_back(module_prev_choice);
+    const int module_next_x=x+width_px*53/100;
+    Rect module_title_rect{x+module_prev.w+18,header.y+2,module_next_x-(x+module_prev.w+24),header_h-4};
+    text(module_title(selected_module),module_title_rect,color(244,247,255),true);
+    Rect module_next{module_next_x,header_y,header_button,header_button};
+    header_button_draw(module_next,">",can_switch);
+    Choice module_next_choice{can_switch?4:0,1,{},module_next,popup_epoch};
+    if(can_switch)rows.push_back(module_next_choice);
+    text(std::to_string(action_count)+" 个动作",{x+width_px*59/100,header.y+2,width_px*13/100,header_h-4},color(183,198,239),true);
+    const int page_prev_x=x+width_px*73/100;
+    Rect page_prev{page_prev_x,header_y,header_button,header_button};
+    const bool has_prev=popup_page>0,has_next=popup_page+1<pages;
+    header_button_draw(page_prev,"<",has_prev);
+    Choice page_prev_choice{has_prev?3:0,-1,{},page_prev,popup_epoch};
+    if(has_prev)rows.push_back(page_prev_choice);
+    Rect page_label{x+width_px*78/100,header.y+2,width_px*12/100,header_h-4};
+    text(std::to_string(popup_page+1)+"/"+std::to_string(pages),page_label,color(235,241,255),true);
+    Rect page_next{x+width_px*91/100,header_y,header_button,header_button};
+    header_button_draw(page_next,">",has_next);
+    Choice page_next_choice{has_next?3:0,1,{},page_next,popup_epoch};
+    if(has_next)rows.push_back(page_next_choice);
     int index=0;
     for(auto& [key,a]:state.actions){
         if(a.owner!=selected_module)continue;
         const int local=index++-first_action;
         if(local<0||local>=4)continue;
-        Rect r{x+(local%2)*(width_px/2)+4,y+header_h+(local/2)*row_h+2,width_px/2-8,row_h-4};
+        const int col_w=(width_px-22)/2;
+        Rect r{x+7+(local%2)*(col_w+8),header.y+header_h+gap+(local/2)*row_h,col_w,row_h-3};
         Choice choice{2,0,key,r,popup_epoch};
-        rectangle(r,color(44,82,99,250));
-        Rect badge{r.x+4,r.y+3,row_h-10,row_h-10};rectangle(badge,color(75,112,150));
-        size_t first=0;if(!a.name.empty()){unsigned char c=static_cast<unsigned char>(a.name[0]);first=c<0x80?1:c<0xe0?2:c<0xf0?3:4;}
-        text(a.name.substr(0,first),badge,color(248,222,135),true);
-        text(a.name,{badge.x+badge.w+4,r.y,r.w-badge.w-12,r.h},color(240,244,255));rows.push_back(choice);
-    }
-    {
-        for(int i=0;i<2;++i){
-            const int delta=i==0?-1:1;const bool enabled=i==0?popup_page>0:popup_page+1<pages;
-            Rect r=i==0?Rect{x+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4}:
-                          Rect{x+width_px*58/100+4,y+dock_h-footer_h-2,width_px*42/100-8,footer_h-4};
-            Choice choice{enabled?3:0,delta,{},r,popup_epoch};
-            rectangle(r,enabled?color(42,66,100):color(36,53,74));
-            text(i==0?"‹ 上一页":"下一页 ›",r,enabled?color(240,244,255):color(117,132,150),true);
-            if(enabled)rows.push_back(choice);
-        }
-        text(std::to_string(popup_page+1)+"/"+std::to_string(pages),
-             {x+width_px*42/100,y+dock_h-footer_h-2,width_px*16/100,footer_h-4},color(240,244,255),true);
+        frame(r,color(7,15,37),color(48,78,137),color(115,140,220),color(25,43,83));
+        text(a.name,{r.x+10,r.y+1,r.w-20,r.h-2},color(249,250,255),true);
+        rows.push_back(choice);
     }
 }
 
 bool value_prefix(H obj,void**,const patch_method_signature_t*,void* result){
-    if(!result||read<int>(api.action_binding,obj)!=1)return false;
-    auto a=state.find(active_key());if(!a)return false;
+    if(!result||setting_index(obj)==-2)return false;
+    auto a=state.find(active_key(obj));if(!a)return false;
     *static_cast<H*>(result)=patchlib_string_create(a->name.c_str());return true;
 }
 bool visible_prefix(H,void** args,const patch_method_signature_t*,void* result){
@@ -344,22 +413,116 @@ bool slot_prefix(H,void** args,const patch_method_signature_t*,void*){
     drawing.push_back({custom_slot(slot),slot?string(read<H>(api.slot_id,slot)):std::string{},slot&&read<bool>(api.slot_multi,slot)});return false;
 }
 void slot_postfix(H,void**,void*,const patch_method_signature_t*){if(!drawing.empty())drawing.pop_back();}
+void restore_groups(size_t from=0){
+    int value=unbound;
+    while(render_groups.size()>from){const auto v=render_groups.back();render_groups.pop_back();patchlib_array_set(v.array,v.index,&value);}
+}
+bool group_visible_prefix(H,void** args,const patch_method_signature_t*,void* result){
+    if(!args||!args[1]||!result||ui_blocked())return false;
+    H binding=*static_cast<H*>(args[1]);
+    for(int i=0;i<4;++i){auto a=state.find(custom_binding(binding,i));if(a&&a->visible){*static_cast<bool*>(result)=true;return true;}}
+    return false;
+}
+bool group_prefix(H,void** args,const patch_method_signature_t*,void*){
+    GroupDraw context;context.restore_from=render_groups.size();
+    group_drawing.push_back(context);auto& draw=group_drawing.back();
+    H binding=args&&args[0]?*static_cast<H*>(args[0]):nullptr;
+    H config=args&&args[1]?*static_cast<H*>(args[1]):nullptr;
+    auto array=binding?read<H>(api.binding_groups,binding):nullptr;
+    if(!array||patchlib_array_length(array)<4)return false;
+    const auto slot=string(read<H>(api.binding_slot,binding));const auto p=profile_key();
+    const int slot_index=args&&args[2]?*static_cast<int*>(args[2]):0;
+    const auto input_id=p+"\n"+slot;auto input=group_inputs.find(input_id);
+    if(input!=group_inputs.end()&&(input->second.binding!=binding||input->second.config!=config)){
+        release_group_input(input->second);group_inputs.erase(input);input=group_inputs.end();
+    }
+    if(input!=group_inputs.end()){input->second.tick=tick;input->second.slot=slot_index;}
+    else{
+        GroupInput entry{binding,config,slot_index,p,tick,gui::images::retain_object(binding),gui::images::retain_object(config)};
+        if(entry.binding_pin&&entry.config_pin)group_inputs.emplace(input_id,entry);else release_group_input(entry);
+    }
+    for(size_t i=0;i<4;++i){
+        auto key=custom_binding(binding,static_cast<int>(i));auto a=state.find(key);
+        auto subslot=group_slot(slot,static_cast<int>(i));
+        int action=unbound;if(!patchlib_array_at(array,i,&action))continue;
+        if(a&&a->visible&&!ui_blocked()){
+            render_groups.push_back({array,i});int value=carrier;
+            if(!patchlib_array_set(array,i,&value))throw std::runtime_error("cannot set radial draw carrier");
+            action=carrier;
+        }else key.clear();
+        // Verified in PE 1.4.5.8 DrawGroupControl: quick-button draws visit
+        // non-unbound GroupActions[0..3], followed by the centre control.
+        if(action!=unbound)draw.entries.push_back({key,subslot,config&&read<bool>(api.slot_multi,config)});
+    }
+    return false;
+}
+void group_postfix(H,void**,void*,const patch_method_signature_t*){
+    if(group_drawing.empty())return;
+    const auto from=group_drawing.back().restore_from;group_drawing.pop_back();restore_groups(from);
+    if(ready)sync_input();else clear_input();
+}
+bool group_cursor_prefix(H controller,void** args,const patch_method_signature_t*,void*){
+    H cursor=args&&args[0]?*static_cast<H*>(args[0]):nullptr;
+    if(!cursor||in_menu()||editing()||ui_blocked()||!read<bool>(api.cursor_down,cursor)||
+       read<bool>(api.cursor_old,cursor)||read<bool>(api.cursor_ignore,cursor)||read<H>(api.cursor_layer,cursor))return false;
+    using Adjust=Vec(*)(Vec);auto adjust=reinterpret_cast<Adjust>(patchlib_method_get_pointer(api.adjust));
+    using Capture=void(*)(void*,Vec,void*,int,void*,void*,bool,float*);
+    auto capture=reinterpret_cast<Capture>(patchlib_method_get_pointer(api.group_capture));
+    if(!capture||!adjust)return false;
+    const Vec position=adjust(read<Vec>(api.cursor_pos,cursor));const auto p=profile_key();
+    for(const auto& [id,group]:group_inputs){
+        if(group.profile!=p||tick-group.tick>1)continue;
+        auto array=read<H>(api.binding_groups,group.binding);if(!array||patchlib_array_length(array)<4)continue;
+        bool all_unbound=true,custom=false;
+        for(int i=0;i<4;++i){int value=unbound;patchlib_array_at(array,i,&value);all_unbound&=value==unbound;
+            auto a=state.find(custom_binding(group.binding,i));custom|=a&&a->visible;}
+        if(!all_unbound||!custom)continue;
+        const auto from=render_groups.size();
+        try{
+            for(size_t i=0;i<4;++i){auto a=state.find(custom_binding(group.binding,static_cast<int>(i)));if(!a||!a->visible)continue;
+                render_groups.push_back({array,i});int value=carrier;
+                if(!patchlib_array_set(array,i,&value))throw std::runtime_error("cannot prepare radial capture");}
+            // PE 1.4.5.8: this method only hit-tests the centre and assigns its
+            // native input layer/slot. It does not dispatch an action. Restore
+            // before the ordinary UpdateCursor can perform gameplay dispatch.
+            float size=0;capture(controller,position,cursor,group.slot,group.binding,group.config,false,&size);
+        }catch(...){restore_groups(from);throw;}
+        restore_groups(from);
+        if(read<H>(api.cursor_layer,cursor))break;
+    }
+    return false;
+}
 bool quick_prefix(H,void** args,const patch_method_signature_t*,void*){
-    if(drawing.empty()||!args)return false;
-    auto a=state.find(drawing.back().key);if(!a)return false;
-    if(args[2])*static_cast<bool*>(args[2])=a->held;
+    QuickDraw draw;
+    if(!group_drawing.empty()){
+        auto& group=group_drawing.back();draw.radial=true;
+        if(group.next<group.entries.size())draw.context=group.entries[group.next++];
+    }else if(!drawing.empty())draw.context=drawing.back();
+    quick_drawing.push_back(draw);auto& current=quick_drawing.back();
+    if(!args)return false;
+    auto a=state.find(current.context.key);if(!a)return false;
+    current.pressed=current.radial&&args[2]&&*static_cast<bool*>(args[2]);
+    if(!current.radial&&args[2])*static_cast<bool*>(args[2])=a->held;
     if(args[4])*static_cast<bool*>(args[4])=true;
     if(args[5])*static_cast<bool*>(args[5])=true;
     return false;
 }
 void quick_postfix(H,void** args,void*,const patch_method_signature_t*){
-    if(drawing.empty()||!args||!args[1])return;
-    auto a=state.find(drawing.back().key);if(!a||!a->visible)return;
+    if(quick_drawing.empty())return;
+    const auto draw=quick_drawing.back();quick_drawing.pop_back();
+    if(!ready||!args||!args[1])return;
+    auto a=state.find(draw.context.key);if(!a||!a->visible)return;
     Rect r=region(*static_cast<H*>(args[1]));if(r.w<=0||r.h<=0)return;
     text(a->name,r,a->enabled?color(245,247,255):color(130,135,150),true);
-    auto p=profile_key();regions[p+"\n"+drawing.back().slot]={r,a->key,p,drawing.back().slot,tick,drawing.back().multi};
+    auto p=profile_key();
+    if(draw.radial){
+        const auto id=p+"\n"+draw.context.slot;
+        if(draw.pressed&&a->enabled)radial_held[id]={a->key,tick};
+        else{auto held=radial_held.find(id);if(held!=radial_held.end()&&held->second.tick<tick)radial_held.erase(held);}
+    }
+    else regions[p+"\n"+draw.context.slot]={r,a->key,p,draw.context.slot,tick,draw.context.multi};
 }
-void restore_render(){for(auto b:render_bindings)write(api.binding_action,b,unbound);render_bindings.clear();}
+void restore_render(){restore_groups();for(auto b:render_bindings)write(api.binding_action,b,unbound);render_bindings.clear();}
 bool runtime_prefix(H,void**,const patch_method_signature_t*,void*){
     ++runtime_depth;if(runtime_depth!=1)return false;
     auto p=profile();auto arr=p?read<H>(api.profile_controls,p):nullptr;
@@ -367,9 +530,10 @@ bool runtime_prefix(H,void**,const patch_method_signature_t*,void*){
         auto a=state.find(custom_binding(b));if(a&&a->visible&&!ui_blocked()){render_bindings.insert(b);write(api.binding_action,b,carrier);}}
     return false;
 }
-void runtime_postfix(H,void**,void*,const patch_method_signature_t*){if(runtime_depth)--runtime_depth;if(!runtime_depth){restore_render();drawing.clear();}}
+void runtime_postfix(H,void**,void*,const patch_method_signature_t*){if(runtime_depth)--runtime_depth;if(!runtime_depth){restore_render();drawing.clear();quick_drawing.clear();group_drawing.clear();}}
 void tick_postfix(H,void**,void*,const patch_method_signature_t*){++tick;
     for(auto i=regions.begin();i!=regions.end();)if(tick-i->second.tick>2)i=regions.erase(i);else ++i;
+    for(auto i=group_inputs.begin();i!=group_inputs.end();)if(tick-i->second.tick>2){release_group_input(i->second);i=group_inputs.erase(i);}else ++i;
     if(in_menu()||editing())state.sync({});
 }
 void poll_postfix(H,void**,void*,const patch_method_signature_t*){
@@ -377,7 +541,7 @@ void poll_postfix(H,void**,void*,const patch_method_signature_t*){
     auto cm=read<H>(api.manager_instance);if(!cm){clear_input();return;}
     bool in_editor=editing();bool picker=in_editor&&popup_owner&&tick-popup_tick<=2;
     bool blocked=!in_editor&&ui_blocked();
-    if(blocked){state.reset_input();for(auto& [id,c]:claims)if(!c.popup)c.cancelled=true;}
+    if(blocked){normal_held.clear();radial_held.clear();state.reset_input();for(auto& [id,c]:claims)if(!c.popup)c.cancelled=true;}
     auto p=profile_key();std::set<int> live;std::set<std::string> held;
     for(auto i=claims.begin();i!=claims.end();)if(i->second.released)i=claims.erase(i);else ++i;
     int count=invoke<int>(api.count,cm);
@@ -405,19 +569,22 @@ void poll_postfix(H,void**,void*,const patch_method_signature_t*){
         if(!down)v.released=true;
     }
     for(auto i=claims.begin();i!=claims.end();)if(!live.count(i->first))i=claims.erase(i);else ++i;
-    state.sync(held);
+    normal_held=std::move(held);sync_input();
 }
 bool dispatch_prefix(H,void** args,const patch_method_signature_t*,void*){
     return args&&args[0]&&claims.count(read<int>(api.cursor_id,*static_cast<H*>(args[0])));
 }
 bool update_prefix(H obj,void**,const patch_method_signature_t*,void*){
-    changes.emplace_back(!selecting&&read<int>(api.action_binding,obj)==1?profile_key():std::string{},active_slot());
+    changes.emplace_back(!selecting&&setting_index(obj)!=-2?profile_key():std::string{},setting_slot(obj));
     return false;
 }
 void change_postfix(H,void**,void*,const patch_method_signature_t*){
     if(changes.empty())return;
     auto change=changes.back();changes.pop_back();
-    if(!change.first.empty())state.erase(change.first,change.second);
+    if(!change.first.empty()){
+        state.erase(change.first,change.second);
+        for(int i=0;i<4;++i)state.erase(change.first,group_slot(change.second,i));
+    }
 }
 bool remove_slot_prefix(H,void** args,const patch_method_signature_t*,void*){
     std::string slot;
@@ -471,13 +638,13 @@ void resolve(){
     api.batch=field(api.main,"spriteBatch");api.width=method(api.main,"get_screenWidth",0);api.height=method(api.main,"get_screenHeight",0);api.menu=patchlib_type_get_field(api.main,"gameMenu");if(!api.menu||!patchlib_is_valid(api.menu)){api.menu=nullptr;api.menu_getter=method(api.main,"get_gameMenu",0);}
     api.styles_instance=field(api.styles,"Instance");api.active_profile=method(api.styles,"get_ActiveProfile",0);
     auto prof=type("VirtualControlsProfile_Layout");api.profile_id=field(prof,"Id");api.profile_controls=field(prof,"Controls");
-    api.binding_slot=field(api.binding,"SlotId");api.binding_action=field(api.binding,"Action");api.slot_id=field(api.slot,"SlotId");api.slot_multi=field(api.slot,"MultiTouch");api.slot_style=field(api.slot,"Style");api.slot_kind=field(api.slot_type,"ControlType");
+    api.binding_slot=field(api.binding,"SlotId");api.binding_action=field(api.binding,"Action");api.binding_groups=field(api.binding,"GroupActions");api.slot_id=field(api.slot,"SlotId");api.slot_multi=field(api.slot,"MultiTouch");api.slot_style=field(api.slot,"Style");api.slot_kind=field(api.slot_type,"ControlType");
     api.active_control=field(api.panel,"ActiveControl");api.active_slot=field(api.panel,"ActiveSlotConfig");api.action_binding=field(api.setting,"ActionBinding");
     api.display_options=field(type("GUIPulldownSetting"),"displayOptions");api.gui_active=field(api.gui,"Active");api.gui_edit=field(api.gui,"GUIInterfaceEdit");api.gui_editor=field(api.gui,"GUIVirtualInputControllerEdit");api.edit_enabled=field(api.interface_edit,"Enabled");api.gui_runtime=field(api.gui,"GUIVirtualInputController");api.ui_open=method(type("GUIVirtualInputController"),"get_InGameUIOpen",0);
-    api.manager_instance=field(api.manager,"Instance");api.cursor_id=field(api.cursor,"Id");api.cursor_pos=field(api.cursor,"Position");api.cursor_down=field(api.cursor,"Down");api.cursor_old=field(api.cursor,"WasDown");api.cursor_ignore=field(api.cursor,"Ignore");api.cursor_world=field(api.cursor,"IgnoreForWorld");
-    api.rect=method(type("Utils","Terraria"),"DrawInvBG",3);api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
+    api.manager_instance=field(api.manager,"Instance");api.cursor_id=field(api.cursor,"Id");api.cursor_pos=field(api.cursor,"Position");api.cursor_down=field(api.cursor,"Down");api.cursor_old=field(api.cursor,"WasDown");api.cursor_ignore=field(api.cursor,"Ignore");api.cursor_world=field(api.cursor,"IgnoreForWorld");api.cursor_layer=field(api.cursor,"InputLayer");api.group_capture=method(type("GUIVirtualInputController"),"UpdateCursorGroupControl",7);
+    api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
     api.adjust=method(type("XNAUnityRunner"),"AdjustRealScreenForUI",1);api.count=method(api.manager,"GetNumCursors",0);api.at=method(api.manager,"GetCursor",1);
-    api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);api.is_over_options=method(type("GUIPulldownSetting"),"IsOverOptions",1);
+    api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);api.is_over_options=method(api.setting,"IsOverOptions",1);
     api.add_undo=method(api.interface_edit,"AddControlUndo",0);api.has_undo=method(api.interface_edit,"HasUndo",0);api.has_redo=method(api.interface_edit,"HasRedo",0);
 }
 #endif
@@ -511,6 +678,7 @@ void install(){
         REQUIRE_CONTROL_API(patchlib_string_create);
         REQUIRE_CONTROL_API(patchlib_array_length);
         REQUIRE_CONTROL_API(patchlib_array_at);
+        REQUIRE_CONTROL_API(patchlib_array_set);
         REQUIRE_CONTROL_API(patchlib_install_prepost_hook);
         REQUIRE_CONTROL_API(patchlib_uninstall_hook);
 #undef REQUIRE_CONTROL_API
@@ -526,7 +694,10 @@ void install(){
         add_hook(method(controller,"UpdateControlVisibilityRegions",1),runtime_prefix,runtime_postfix,true);
         add_hook(method(controller,"DetermineButtonVisible",3),visible_prefix,nullptr);
         add_hook(method(controller,"DrawButtonControl",4),slot_prefix,slot_postfix);
-        add_hook(method(api.quick,"Draw",6),quick_prefix,quick_postfix);
+        add_hook(method(controller,"DrawGroupControl",4),group_prefix,group_postfix,true);
+        add_hook(method(controller,"DetermineGroupVisible",3),group_visible_prefix,nullptr);
+        add_hook(method(controller,"UpdateCursor",1),group_cursor_prefix,nullptr);
+        add_hook(method(api.quick,"Draw",6),quick_prefix,quick_postfix,true);
         add_hook(method(api.manager,"UpdateCursorList",0),nullptr,poll_postfix);
         add_hook(method(type("CursorInputLayer"),"UpdateCursor",1),dispatch_prefix,nullptr);
         add_hook(method(api.main,"Update",1),nullptr,tick_postfix);
@@ -550,7 +721,7 @@ void install(){
 void shutdown(){
 #if defined(__ANDROID__) && defined(__aarch64__)
     for(auto it=hooks.rbegin();it!=hooks.rend();++it)patchlib_uninstall_hook(*it);
-    hooks.clear();restore_render();clear_input();rows.clear();module_ids.clear();popup_module=0;drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
+    hooks.clear();restore_render();clear_input();rows.clear();module_ids.clear();popup_module=0;drawing.clear();quick_drawing.clear();group_drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
 #endif
     ready=false;state.actions.clear();state.clear_history();state.backup.clear();state.clipboard.clear();state.has_backup=false;state.has_clipboard=false;
 }
@@ -560,7 +731,9 @@ void unregister_owner(lua_mod_handle_t* h){
     for(auto& [key,a]:state.actions)if(a.owner==h->mod_id)invalidate(key,true);
 #endif
     state.remove_owner(h->mod_id);
+#if defined(__ANDROID__) && defined(__aarch64__)
     refresh_modules();
+#endif
 }
 void register_api(lua_State* L,lua_mod_handle_t* h){
     lua_newtable(L);
