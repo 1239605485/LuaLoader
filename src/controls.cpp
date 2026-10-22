@@ -15,7 +15,6 @@
 #include <fstream>
 #include <optional>
 #include <stdexcept>
-#include <unordered_map>
 #include <utility>
 extern "C" {
 #include "lua.h"
@@ -103,7 +102,7 @@ struct Api {
  H slot_id{},slot_style{},slot_kind{},slot_multi{},active_control{},active_slot{},action_binding{},display_options{};
  H gui_active{},gui_edit{},edit_enabled{},gui_editor{},gui_runtime{},ui_open{};
  H manager_instance{},cursor_id{},cursor_pos{},cursor_down{},cursor_old{},cursor_ignore{},cursor_world{},cursor_layer{},group_capture{};
- H text{},text_flush{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
+ H text{},get_region{},adjust{},count{},at{},update_value{},close_options{},is_over_options{},add_undo{},has_undo{},has_redo{};
 } api;
 std::vector<patch_hook_id_t> hooks;
 unsigned long long tick=0;
@@ -225,47 +224,14 @@ void arrow(Rect r,bool right,bool enabled){
     for(int i=0;i<size;++i){int px=right?cx-size/2+i:cx+size/2-i;
         rectangle({px,cy-size+i+1,1,(size-i)*2-1},ink);}
 }
-struct ControlText {H value=nullptr;unsigned int pin=0;unsigned long long used=0;};
-std::unordered_map<std::string,ControlText> control_text_cache;
-unsigned long long control_text_clock=0;
-void clear_control_text_cache(){for(auto& item:control_text_cache){if(item.second.pin)gui::images::release_object(item.second.pin);if(item.second.value)patchlib_free(item.second.value);}control_text_cache.clear();control_text_clock=0;}
-// One diagnostic per condition; never write logs on every rendered frame.
-void control_text_diagnostic(unsigned bit,const char* message){
-    static unsigned reported=0;if(reported&bit)return;reported|=bit;
-    LOG_INFO("[controls-text] {}",message);
-    if(!storage.empty()){
-        std::ofstream out(storage.parent_path()/"controls_text_runtime.log",std::ios::app);
-        if(out)out<<"[controls-text] "<<message<<'\n';
-    }
-}
-H cached_control_text(const std::string& value){
-    auto found=control_text_cache.find(value);if(found!=control_text_cache.end()){found->second.used=++control_text_clock;return found->second.value;}
-    H string=patchlib_string_create(value.c_str());if(!string){control_text_diagnostic(1,"string creation failed");return nullptr;}
-    ControlText entry;entry.value=string;entry.used=++control_text_clock;entry.pin=gui::images::retain_object(string);
-    if(!entry.pin){patchlib_free(string);control_text_diagnostic(2,"GC handle unavailable; text not cached or drawn");return nullptr;}
-    if(control_text_cache.size()>=256){auto oldest=control_text_cache.begin();for(auto it=control_text_cache.begin();it!=control_text_cache.end();++it)if(it->second.used<oldest->second.used)oldest=it;gui::images::release_object(oldest->second.pin);patchlib_free(oldest->second.value);control_text_cache.erase(oldest);}
-    control_text_cache.emplace(value,entry);return string;
-}
 void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=read<H>(api.batch);if(!sb||value.empty())return;
-    float estimated_width=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)estimated_width+=ch<0x80?14.0f:26.0f;
-    float scale=std::min(0.85f,(r.w-12)/std::max(1.0f,estimated_width));
-    scale=std::max(0.15f,scale);float x=center?r.x+r.w/2.0f:static_cast<float>(r.x+8);
-    H s=cached_control_text(value);if(!s)return;
-    // Match LuaLoader's Android GUI renderer: its verified native delegate
-    // call avoids the reflection/struct-return path that aborts on device.
+    size_t chars=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)++chars;
+    float scale=std::min(0.85f,(r.w-12)/std::max(1.0f,chars*26.0f));
+    scale=std::max(0.15f,scale);float x=static_cast<float>(r.x+8);if(center)x=r.x+r.w/2.0f-chars*26.0f*scale/2;
+    auto s=patchlib_string_create(value.c_str());if(!s)return;
     using Fn=Vec(*)(void*,void*,Vec,Color,float,float,float,int);
-    auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));
-    if(!fn){control_text_diagnostic(4,"DrawBorderString native pointer unavailable");return;}
-    using Flush=void(*)(void*);
-    auto flush=reinterpret_cast<Flush>(patchlib_method_get_pointer(api.text_flush));
-    if(!flush){control_text_diagnostic(16,"SpriteBatch.Flush native pointer unavailable");return;}
-    // PE may regroup textures inside a deferred batch. Commit the existing
-    // background before the font, then commit the font before later UI draws.
-    // Flush keeps the caller's Begin/End scope and current UI transform intact.
-    flush(sb);
-    fn(sb,s,{x,r.y+r.h/2.0f},c,scale,center?0.5f:0.0f,0.5f,-1);
-    flush(sb);
-    control_text_diagnostic(8,"foreground flush completed around DrawBorderString (batch fix 2)");
+    auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));if(fn)fn(sb,s,{x,r.y+(r.h-28*scale)/2},c,scale,0,0,-1);
+    patchlib_free(s);
 }
 Rect region(H layout){using Fn=Rect(*)(void*);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.get_region));return fn&&layout?fn(layout):Rect{};}
 void release_group_input(GroupInput& input){gui::images::release_object(input.binding_pin);gui::images::release_object(input.config_pin);}
@@ -676,7 +642,6 @@ void resolve(){
     api.active_control=field(api.panel,"ActiveControl");api.active_slot=field(api.panel,"ActiveSlotConfig");api.action_binding=field(api.setting,"ActionBinding");
     api.display_options=field(type("GUIPulldownSetting"),"displayOptions");api.gui_active=field(api.gui,"Active");api.gui_edit=field(api.gui,"GUIInterfaceEdit");api.gui_editor=field(api.gui,"GUIVirtualInputControllerEdit");api.edit_enabled=field(api.interface_edit,"Enabled");api.gui_runtime=field(api.gui,"GUIVirtualInputController");api.ui_open=method(type("GUIVirtualInputController"),"get_InGameUIOpen",0);
     api.manager_instance=field(api.manager,"Instance");api.cursor_id=field(api.cursor,"Id");api.cursor_pos=field(api.cursor,"Position");api.cursor_down=field(api.cursor,"Down");api.cursor_old=field(api.cursor,"WasDown");api.cursor_ignore=field(api.cursor,"Ignore");api.cursor_world=field(api.cursor,"IgnoreForWorld");api.cursor_layer=field(api.cursor,"InputLayer");api.group_capture=method(type("GUIVirtualInputController"),"UpdateCursorGroupControl",7);
-    api.text_flush=method(type("SpriteBatch","Microsoft.Xna.Framework.Graphics"),"Flush",0);
     api.text=method(type("Utils","Terraria"),"DrawBorderString",8);api.get_region=method(api.quick,"GetRegionWithoutPicking",1);
     api.adjust=method(type("XNAUnityRunner"),"AdjustRealScreenForUI",1);api.count=method(api.manager,"GetNumCursors",0);api.at=method(api.manager,"GetCursor",1);
     api.update_value=method(api.setting,"UpdateValue",1);api.close_options=method(type("GUIPulldownSetting"),"CloseOptions",0);api.is_over_options=method(api.setting,"IsOverOptions",1);
@@ -757,7 +722,6 @@ void shutdown(){
 #if defined(__ANDROID__) && defined(__aarch64__)
     for(auto it=hooks.rbegin();it!=hooks.rend();++it)patchlib_uninstall_hook(*it);
     hooks.clear();restore_render();clear_input();rows.clear();module_ids.clear();popup_module=0;drawing.clear();quick_drawing.clear();group_drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
-    clear_control_text_cache();
 #endif
     ready=false;state.actions.clear();state.clear_history();state.backup.clear();state.clipboard.clear();state.has_backup=false;state.has_clipboard=false;
 }
