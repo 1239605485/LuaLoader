@@ -15,6 +15,7 @@
 #include <fstream>
 #include <optional>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 extern "C" {
 #include "lua.h"
@@ -224,18 +225,28 @@ void arrow(Rect r,bool right,bool enabled){
     for(int i=0;i<size;++i){int px=right?cx-size/2+i:cx+size/2-i;
         rectangle({px,cy-size+i+1,1,(size-i)*2-1},ink);}
 }
+struct ControlText {H value=nullptr;unsigned int pin=0;unsigned long long used=0;};
+std::unordered_map<std::string,ControlText> control_text_cache;
+unsigned long long control_text_clock=0;
+void clear_control_text_cache(){for(auto& item:control_text_cache){if(item.second.pin)gui::images::release_object(item.second.pin);if(item.second.value)patchlib_free(item.second.value);}control_text_cache.clear();control_text_clock=0;}
+H cached_control_text(const std::string& value){
+    auto found=control_text_cache.find(value);if(found!=control_text_cache.end()){found->second.used=++control_text_clock;return found->second.value;}
+    H string=patchlib_string_create(value.c_str());if(!string)return nullptr;
+    ControlText entry;entry.value=string;entry.used=++control_text_clock;entry.pin=gui::images::retain_object(string);
+    if(!entry.pin){patchlib_free(string);return nullptr;}
+    if(control_text_cache.size()>=256){auto oldest=control_text_cache.begin();for(auto it=control_text_cache.begin();it!=control_text_cache.end();++it)if(it->second.used<oldest->second.used)oldest=it;gui::images::release_object(oldest->second.pin);patchlib_free(oldest->second.value);control_text_cache.erase(oldest);}
+    control_text_cache.emplace(value,entry);return string;
+}
 void text(const std::string& value,Rect r,Color c,bool center=false){auto sb=read<H>(api.batch);if(!sb||value.empty())return;
     float estimated_width=0;for(unsigned char ch:value)if((ch&0xc0)!=0x80)estimated_width+=ch<0x80?14.0f:26.0f;
     float scale=std::min(0.85f,(r.w-12)/std::max(1.0f,estimated_width));
     scale=std::max(0.15f,scale);float x=center?r.x+r.w/2.0f:static_cast<float>(r.x+8);
-    auto s=patchlib_string_create(value.c_str());if(!s)return;
-    Vec position{x,r.y+r.h/2.0f},ignored{};float anchor_x=center?0.5f:0.0f,anchor_y=0.5f;int max_characters=-1;
-    void* args[]={&sb,&s,&position,&c,&scale,&anchor_x,&anchor_y,&max_characters};
-    // DrawBorderString returns Vector2 and is an IL2CPP static method. Invoke
-    // through patchlib so its hidden MethodInfo* argument and struct ABI are
-    // supplied; calling the raw pointer as a C function drops MethodInfo.
-    patchlib_method_invoke_args(api.text,nullptr,&ignored,args);
-    patchlib_free(s);
+    H s=cached_control_text(value);if(!s)return;
+    // Match LuaLoader's Android GUI renderer: its verified native delegate
+    // call avoids the reflection/struct-return path that aborts on device.
+    using Fn=Vec(*)(void*,void*,Vec,Color,float,float,float,int);
+    auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.text));
+    if(fn)fn(sb,s,{x,r.y+r.h/2.0f},c,scale,center?0.5f:0.0f,0.5f,-1);
 }
 Rect region(H layout){using Fn=Rect(*)(void*);auto fn=reinterpret_cast<Fn>(patchlib_method_get_pointer(api.get_region));return fn&&layout?fn(layout):Rect{};}
 void release_group_input(GroupInput& input){gui::images::release_object(input.binding_pin);gui::images::release_object(input.config_pin);}
@@ -726,6 +737,7 @@ void shutdown(){
 #if defined(__ANDROID__) && defined(__aarch64__)
     for(auto it=hooks.rbegin();it!=hooks.rend();++it)patchlib_uninstall_hook(*it);
     hooks.clear();restore_render();clear_input();rows.clear();module_ids.clear();popup_module=0;drawing.clear();quick_drawing.clear();group_drawing.clear();selected.reset();popup_owner=nullptr;runtime_depth=0;
+    clear_control_text_cache();
 #endif
     ready=false;state.actions.clear();state.clear_history();state.backup.clear();state.clipboard.clear();state.has_backup=false;state.has_clipboard=false;
 }
