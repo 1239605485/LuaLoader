@@ -165,10 +165,14 @@ namespace lualoader::lua_api {
             return 1;
         }
         if (lua_isnoneornil(L, 3)) {
-            /* 省略类型时只对「元素大小至少一个指针」的数组按对象返回；
-               标量数组（如 float[]，元素 4 字节）不能把值当指针读，
-               否则会把相邻内存拼成假句柄。 */
-            if (array_element_bytes(array) < sizeof(void *)) {
+            /* 省略类型只对「引用类型元素」的数组返回对象句柄。
+               64 位可用元素大小兜底；32 位标量和指针同为 4 字节，
+               必须问内核元素类型（float[] / int[] 等标量返回 nil）。 */
+            const bool is_ref =
+                patchlib_array_element_is_reference
+                    ? patchlib_array_element_is_reference(array)
+                    : (array_element_bytes(array) >= sizeof(void *));
+            if (!is_ref) {
                 lua_pushnil(L);
                 return 1;
             }
