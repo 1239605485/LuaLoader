@@ -4,6 +4,7 @@
   "icon": {
     "type": "Default"
   },
+  "modRepositoryIndexUrl": "https://raw.githubusercontent.com/lzup333/Community-TEFKernel-LuaLoader-Mods/main/index.json",
   "plugins": {
     "type": "NULL"
   },

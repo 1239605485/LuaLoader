@@ -61,5 +61,8 @@ namespace lualoader::logger {
      */
     void write(mod_log_level_t level, const char* tag, const char* message);
 
-    extern "C" void mod_logger_write_imp(mod_log_level_t level, const char* tag, const char* fmt, ...);
+    // Keep the loader callback symbol private to LuaLoader's ABI namespace.
+    // KernelLoader exposes a function with the old generic C name; both loaders
+    // can be injected into the same process, so a generic symbol is unsafe.
+    extern "C" void lualoader_mod_logger_write_imp(mod_log_level_t level, const char* tag, const char* fmt, ...);
 }

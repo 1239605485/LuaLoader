@@ -156,7 +156,7 @@ void lualoader::logger::write(const mod_log_level_t level, const char *tag, cons
     }
 }
 
-void lualoader::logger::mod_logger_write_imp(const mod_log_level_t level, const char *tag, const char *fmt, ...) {
+void lualoader::logger::lualoader_mod_logger_write_imp(const mod_log_level_t level, const char *tag, const char *fmt, ...) {
     if (!fmt) return;
 
     char buffer[4096];
