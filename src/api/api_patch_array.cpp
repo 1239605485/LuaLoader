@@ -1,5 +1,7 @@
 #include "api_internal.hpp"
 
+#include <cstdint>
+
 namespace lualoader::lua_api {
 
     // ========================================================================
@@ -163,6 +165,13 @@ namespace lualoader::lua_api {
             return 1;
         }
         if (lua_isnoneornil(L, 3)) {
+            /* 省略类型时只对「元素大小至少一个指针」的数组按对象返回；
+               标量数组（如 float[]，元素 4 字节）不能把值当指针读，
+               否则会把相邻内存拼成假句柄。 */
+            if (array_element_bytes(array) < sizeof(void *)) {
+                lua_pushnil(L);
+                return 1;
+            }
             void *ptr = *static_cast<void **>(buffer);
             if (ptr) lua_pushlightuserdata(L, ptr);
             else lua_pushnil(L);
@@ -188,8 +197,18 @@ namespace lualoader::lua_api {
     /// 依据 Lua 值推断写入类型（显式类型由调用方给出）
     static patch_type_t infer_set_type(lua_State *L, const int idx, void *out, std::vector<patch_handle_t> &owned) {
         const int t = lua_type(L, idx);
-        if (t == LUA_TBOOLEAN) return PATCH_BOOL;
-        if (t == LUA_TNUMBER) return lua_isinteger(L, idx) ? PATCH_INT32 : PATCH_FLOAT;
+        if (t == LUA_TBOOLEAN) {
+            *static_cast<bool *>(out) = lua_toboolean(L, idx) != 0;
+            return PATCH_BOOL;
+        }
+        if (t == LUA_TNUMBER) {
+            if (lua_isinteger(L, idx)) {
+                *static_cast<int32_t *>(out) = static_cast<int32_t>(lua_tointeger(L, idx));
+                return PATCH_INT32;
+            }
+            *static_cast<float *>(out) = static_cast<float>(lua_tonumber(L, idx));
+            return PATCH_FLOAT;
+        }
         if (t == LUA_TLIGHTUSERDATA) {
             *static_cast<void **>(out) = lua_touserdata(L, idx);
             return PATCH_OBJECT;

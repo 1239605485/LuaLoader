@@ -217,10 +217,10 @@ mod.patch.set_field_raw(field, instance, raw)            -- 1~16 字节
 
 ```lua
 local n   = mod.patch.array_length(array)
-local obj = mod.patch.array_at(array, i)             -- 省略类型按对象
-local num = mod.patch.array_at(array, i, "float")    -- 值类型数组给类型名
-mod.patch.array_set(array, i, value[, type])
-mod.patch.array_fill(array, value[, type])
+local obj = mod.patch.array_at(array, i)             -- 省略类型只用于对象数组；标量数组返回 nil
+local num = mod.patch.array_at(array, i, "float")    -- 值类型数组必须给类型名
+mod.patch.array_set(array, i, value[, type])         -- 省略 type 时按 bool/int32/float 推断
+mod.patch.array_fill(array, value[, type])           -- 省略 type 时按 bool/int32/float 推断
 mod.patch.array_create(size, elem_type)              -- elem_type 为类型句柄或名
 mod.patch.array_at_raw(array, i, size)               -- 原始字节读
 mod.patch.array_set_raw(array, i, raw)
