@@ -1,5 +1,6 @@
 #if defined(__ANDROID__)
 #include "controls.hpp"
+#include "logger.hpp"
 #include "tefkernel/terraria/content/button_manager.h"
 #include <cstring>
 extern "C" {
@@ -45,7 +46,12 @@ int flag(lua_State* L,bool visible){auto h=owner(L);const char* id=luaL_checkstr
 int enable(lua_State* L){return flag(L,false);}int show(lua_State* L){return flag(L,true);}
 }
 void configure_storage(const std::string& directory){if(linked())terraria_button_manager_configure_storage(directory.c_str());}
-void install(){if(linked())terraria_button_manager_install();}
+void install(){
+ if(!linked()){LOG_ERROR("[button-interface] kernel button_manager exports missing; install the modified PE kernel");return;}
+ terraria_button_manager_install();
+ if(!terraria_button_manager_available())LOG_ERROR("[button-interface] kernel initialization failed: {}",error());
+ else LOG_INFO("[button-interface] ready: native PE buttons and PNG icons");
+}
 void shutdown(){/* Kernel owns hooks; unloading Lua only unregisters its actions. */}
 void append_image_owners(std::vector<std::string>&){}
 void unregister_owner(lua_mod_handle_t* h){if(h&&linked())terraria_button_manager_unregister_owner(h->mod_id.c_str());}

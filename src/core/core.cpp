@@ -315,8 +315,13 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
 const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
+#if defined(__ANDROID__)
+            40,
+            "2.3.5-button1",
+#else
             36,
             "2.3.2",
+#endif
             1,
             0,
             nullptr,
