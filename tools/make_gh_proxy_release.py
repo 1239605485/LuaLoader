@@ -29,7 +29,6 @@ def main() -> int:
         raise SystemExit(f"missing package: {package}")
 
     mirror_info = dict(info)
-    mirror_info["name"] = "LuaLoader（gh-proxy镜像版）"
     mirror_info["description"] = f"{info.get('description', '')}\n{WARNING}"
     mirror_info["modRepositoryIndexUrl"] = PROXY_INDEX
 
