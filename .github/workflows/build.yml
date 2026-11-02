@@ -125,6 +125,9 @@ jobs:
           chmod +x build.sh
           ./build.sh -r --package
 
+      - name: Build gh-proxy mirror package
+        run: python3 tools/make_gh_proxy_release.py
+
       # ---------- 上传产物 ----------
       - name: Upload artifact
         uses: actions/upload-artifact@v4
