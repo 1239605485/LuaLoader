@@ -316,8 +316,8 @@ const ml_info_t *lualoader::core::get_info() {
     static ml_info_t info = {
             "lzup333.lualoader",
 #if defined(__ANDROID__)
-            40,
-            "2.3.5-button1",
+            41,
+            "2.3.5-button2",
 #else
             36,
             "2.3.2",
