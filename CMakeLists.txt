@@ -25,7 +25,6 @@ add_subdirectory(lib/lua-5.4.8)
 set(LUALOADER_SOURCES
         src/core/core.cpp
         src/core/logger.cpp
-        src/core/mod_repository.cpp
         src/lua/lua_engine.cpp
         src/api/api_common.cpp
         src/api/api_fs.cpp
