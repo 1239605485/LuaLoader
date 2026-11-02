@@ -1,3 +1,6 @@
+#if defined(__ANDROID__)
+#include "controls.hpp"
+#endif
 /*******************************************************************************
  * LuaLoader - core
  * Copyright (C) 2026 lzup333
@@ -251,6 +254,10 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     // 联机：注册内核 Mod 消息回调（客户端发包 → 服务端这里分发）
     terraria_net_set_mod_message_handler(on_mod_message);
 
+#if defined(__ANDROID__)
+    if(ml_entry && ml_entry->private_dir)controls::configure_storage(ml_entry->private_dir);
+    controls::install();
+#endif
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
     if (ml_entry && ml_entry->private_dir) {
 #ifdef LUALOADER_GUI

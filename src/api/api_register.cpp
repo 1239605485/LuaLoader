@@ -1,3 +1,6 @@
+#if defined(__ANDROID__)
+#include "controls.hpp"
+#endif
 #include "api_internal.hpp"
 
 namespace lualoader::lua_api {
@@ -17,6 +20,9 @@ namespace lualoader::lua_api {
         luaL_newmetatable(L, HOOK_METATABLE);
         lua_pushcfunction(L, l_hook_remove);
         lua_setfield(L, -2, "remove");
+#if defined(__ANDROID__)
+        controls::register_api(L, handle);
+#endif
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
         lua_pop(L, 1);
