@@ -12,6 +12,7 @@
  *******************************************************************************/
 
 #include "gui_ime.hpp"
+#include "gui_images.hpp"
 
 #if defined(__ANDROID__)
 
@@ -26,6 +27,7 @@
 namespace {
 
     patch_handle_t g_kb = PATCH_NULL; // TouchScreenKeyboard 实例
+    unsigned int g_kb_root = 0;
 
     patch_handle_t t_kb = PATCH_NULL;
     patch_handle_t m_open = PATCH_NULL;       // static Open(text, type, autocorrect, multiline, secure, alert, placeholder, limit)
@@ -99,6 +101,13 @@ namespace lualoader::gui::ime {
 
         if (patchlib_is_valid(kb)) {
             g_kb = kb;
+            g_kb_root = images::retain_object(kb);
+            if (!g_kb_root) {
+                close();
+                LOG_ERROR("[ime] 无法建立键盘 GC 强引用");
+                return;
+            }
+            LOG_INFO("[ime] keyboard GC root={}", g_kb_root);
             LOG_INFO("[ime] 系统软键盘已弹出");
         } else {
             LOG_WARN("[ime] TouchScreenKeyboard.Open 失败");
@@ -119,6 +128,8 @@ namespace lualoader::gui::ime {
             patchlib_method_invoke_args(m_destroy, g_kb, NULL, NULL);
         patchlib_free(g_kb);
         g_kb = PATCH_NULL;
+        images::release_object(g_kb_root);
+        g_kb_root = 0;
     }
 
     int poll(std::string &text) {
