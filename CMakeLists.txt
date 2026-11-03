@@ -23,6 +23,7 @@ add_subdirectory(lib/lua-5.4.8)
 
 # 原生 GUI：直接使用游戏自带的 XNA/Unity SpriteBatch 绘制，不再依赖 Dear ImGui。
 set(LUALOADER_SOURCES
+        src/controls.cpp
         src/core/core.cpp
         src/core/logger.cpp
         src/lua/lua_engine.cpp

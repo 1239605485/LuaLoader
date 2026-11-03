@@ -1,3 +1,6 @@
+#if defined(__ANDROID__)
+#include "controls.hpp"
+#endif
 #include "api_internal.hpp"
 
 namespace lualoader::lua_api {
@@ -96,6 +99,9 @@ namespace lualoader::lua_api {
         lualoader::gui::register_api(L, handle);
 #endif
 
+#if defined(__ANDROID__)
+        controls::register_api(L, handle);
+#endif
         lua_pushvalue(L, -1);
         lua_setglobal(L, "mod");
         lua_pop(L, 1);

@@ -1,3 +1,6 @@
+#if defined(__ANDROID__)
+#include "controls.hpp"
+#endif
 /*******************************************************************************
  * LuaLoader - lua engine
  * Copyright (C) 2026 lzup333
@@ -573,6 +576,9 @@ namespace lualoader::lua_engine {
         lua_api::unregister_npcs(handle);
         lua_api::unregister_recipes(handle);
         if (handle->L) {
+#if defined(__ANDROID__)
+            controls::unregister_owner(handle);
+#endif
             lua_close(handle->L);
             handle->L = nullptr;
         }

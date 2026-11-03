@@ -58,3 +58,6 @@
 #include "terraria/recipe_manager.h"
 #include "terraria/language_manager.h"
 #include "terraria/netmanager.h"
+#if defined(__ANDROID__)
+#include "terraria/content/button_manager.h"
+#endif
