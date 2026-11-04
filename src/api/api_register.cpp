@@ -100,7 +100,9 @@ namespace lualoader::lua_api {
 #endif
 
 #if defined(__ANDROID__)
+        /* TODO(button): 内核 button_manager 被上游 revert，暂时禁用
         controls::register_api(L, handle);
+        */
 #endif
         lua_pushvalue(L, -1);
         lua_setglobal(L, "mod");

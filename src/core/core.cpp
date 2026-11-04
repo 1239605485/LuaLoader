@@ -256,8 +256,10 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     terraria_net_set_mod_message_handler(on_mod_message);
 
 #if defined(__ANDROID__)
+    /* TODO(button): 内核 button_manager 被上游 revert，暂时禁用
     if(ml_entry && ml_entry->private_dir)controls::configure_storage(ml_entry->private_dir);
     controls::install();
+    */
 #endif
     // 读取加载器隐藏配置（<private_dir>/config.json），按需开启调试工具
     if (ml_entry && ml_entry->private_dir) {
