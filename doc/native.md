@@ -52,8 +52,12 @@ int luaopen_hello(lua_State *L) {
 INC=-I<LuaLoader>/includes
 clang -O2 -fPIC -shared -o hello.so hello.c $INC        # Linux
 $NDK/.../aarch64-linux-android24-clang -O2 -fPIC -shared -o hello.so hello.c $INC   # Android
-x86_64-w64-mingw32-gcc -O2 -shared -o hello.dll hello.c $INC <LuaLoader>/sdk/windows_x64/libloader.windows.x64.dll.a   # Windows
+x86_64-w64-mingw32-gcc -O2 -shared -o hello.dll hello.c $INC <SDK>/windows_x64/libloader.windows.x64.dll.a   # Windows
 ```
+
+Windows 导入库不随源码仓库分发，请从 Releases 下载 `LuaLoader-sdk-v<版本>.zip`，
+解压后把其中的 `sdk/` 目录当作上面的 `<SDK>`。需要自行生成时：
+`./build.sh win-x64 win-x86 --implib --sdk-zip`。
 
 打包即普通 Mod 目录：`Resources/lib/main.lua` + `Resources/native/<平台>_<架构>/hello.so`。
 

@@ -119,11 +119,13 @@ jobs:
           echo "TEFKERNEL_LIB=${{ github.workspace }}/tefkernel/libtefkernel.linux.x86_64.so" >> $GITHUB_ENV
 
       # ---------- 构建 + 打包 ----------
+      # sdk/（Windows 导入库）不随仓库分发：CI 里由 win 构建生成，
+      # 并单独打成 dist/LuaLoader-sdk-v<版本>.zip 作为 Release asset。
       - name: Build & package
         shell: bash
         run: |
           chmod +x build.sh
-          ./build.sh -r --package
+          ./build.sh -r --package --sdk-zip
 
       - name: Build gh-proxy mirror package
         run: python3 tools/make_gh_proxy_release.py

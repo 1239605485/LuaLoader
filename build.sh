@@ -19,6 +19,7 @@
 #   -j, --jobs N           并行数（默认 nproc）
 #       --gui              （已弃用）原生 GUI 现为内置，无需开关
 #       --implib           把 Windows 导入库复制到 sdk/windows_<arch>/
+#       --sdk-zip          把 sdk/ 打成 dist/LuaLoader-sdk-v<版本>.zip（Release asset）
 #       --package          构建后打包 dist/lualoader.tefpkg 并生成发行 zip
 #       --package-only     跳过编译，仅用现有产物打包
 #   -f, --fingerprint HEX  tefpkg 指纹（默认 0x114514）
@@ -59,7 +60,7 @@ ALL_PLATFORMS="linux-x64 linux-x86 win-x64 win-x86 android-arm64 android-arm"
 PLATFORMS=()
 BT=Release
 CLEAN=0; JOBS="$(nproc 2>/dev/null || echo 4)"
-GUI=0; IMPLIB=0; PACKAGE=0; PACKAGE_ONLY=0; NO_ZIP=0; DRY=0
+GUI=0; IMPLIB=0; PACKAGE=0; PACKAGE_ONLY=0; NO_ZIP=0; SDKZIP=0; DRY=0
 FP=0x114514
 KERNEL_LIB="${TEFKERNEL_LIB:-}"
 
@@ -78,6 +79,7 @@ while [ $# -gt 0 ]; do
     -f|--fingerprint) FP="$2"; shift 2 ;;
     --kernel-lib)   KERNEL_LIB="$2"; shift 2 ;;
     --no-zip)     NO_ZIP=1; shift ;;
+    --sdk-zip)    SDKZIP=1; shift ;;
     -n|--dry-run) DRY=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     all)          PLATFORMS+=($ALL_PLATFORMS); shift ;;
@@ -210,6 +212,31 @@ package() {
   run unzip -l "$zip"
 }
 
+# ---------- 原生模块 SDK ----------
+# Windows 导入库（.dll.a）只随 Release 的独立 asset 分发，不进版本库：
+# 二进制提交会让仓库膨胀，且它们本就可以由 build.sh 重新生成。
+package_sdk() {
+  local ver zip
+  ver="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/Info.json" | head -1)"
+  [ -n "$ver" ] || ver=0.0.0
+  zip="$ROOT/dist/LuaLoader-sdk-v$ver.zip"
+
+  if [ ! -d "$ROOT/sdk" ]; then
+    err "没有 sdk/ 目录：先构建 Windows 平台并加 --implib 生成导入库"
+    return 1
+  fi
+  if [ -z "$(find "$ROOT/sdk" -name '*.a' -print -quit)" ]; then
+    err "sdk/ 下没有导入库：先构建 Windows 平台并加 --implib"
+    return 1
+  fi
+
+  info "──────── 打包原生模块 SDK ────────"
+  run rm -f "$zip"; run mkdir -p "$ROOT/dist"
+  run bash -c "cd '$ROOT' && zip -qrX '$zip' sdk" || return 1
+  info "完成：$zip"
+  run unzip -l "$zip"
+}
+
 # ---------- 主流程 ----------
 info "LuaLoader 构建脚本   ROOT=$ROOT"
 info "构建类型：$BT   平台：${PLATFORMS[*]}   并行：$JOBS   指纹：$FP"
@@ -231,6 +258,10 @@ fi
 
 if [ "$PACKAGE" = 1 ]; then
   package || { err "打包失败"; exit 1; }
+fi
+
+if [ "$SDKZIP" = 1 ]; then
+  package_sdk || { err "SDK 打包失败"; exit 1; }
 fi
 
 info "全部完成。"

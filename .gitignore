@@ -24,3 +24,6 @@ tests/
 
 # 内核库（打包用，不入库）
 libtefkernel.*.so
+
+# 原生模块 SDK（导入库），由 build.sh --implib 生成，随 Release asset 分发
+/sdk/
