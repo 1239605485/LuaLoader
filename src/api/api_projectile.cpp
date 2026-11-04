@@ -234,7 +234,7 @@ namespace lualoader::lua_api {
                         lua_pop(L, 1);
                     }
                 }
-                patchlib_free(proj_class);
+                /* field 句柄已存进 defaults；桌面端不能释放其 class */
             }
             lua_pop(L, 1);
         }

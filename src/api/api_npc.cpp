@@ -198,7 +198,7 @@ namespace lualoader::lua_api {
                         lua_pop(L, 1);
                     }
                 }
-                patchlib_free(npc_class);
+                /* field 句柄已存进 defaults；桌面端不能释放其 class */
             }
             lua_pop(L, 1);
         }
@@ -259,11 +259,13 @@ namespace lualoader::lua_api {
         if (!e->loot.empty())
             e->npc.npc_ops.on_death = lua_npc_on_death;
 
-        patch_handle_t npc_cls = patchlib_type_get_type("Terraria", "NPC");
+        static patch_handle_t npc_cls = PATCH_NULL;
+        if (!patchlib_is_valid(npc_cls))
+            npc_cls = patchlib_type_get_type("Terraria", "NPC");
         e->f_pos = patchlib_type_get_field(npc_cls, "position");
         e->f_width = patchlib_type_get_field(npc_cls, "width");
         e->f_height = patchlib_type_get_field(npc_cls, "height");
-        patchlib_free(npc_cls);
+        /* class 常驻：桌面端 field 句柄依附它 */
 
         if (!terraria_npc_manager_register_npc(&e->npc)) {
             LOG_ERROR("[mod.npc] {}: 注册失败", npc_name);

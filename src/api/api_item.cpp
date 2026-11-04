@@ -79,11 +79,12 @@ namespace lualoader::lua_api {
          * UseSound 是 LegacySoundStyle 引用字段，直接放 SoundID.ItemN 的对象。 */
         if (patchlib_is_valid(e->use_sound)) {
             static patch_handle_t f_use_sound = PATCH_NULL;
+            static patch_handle_t item_cls = PATCH_NULL;
             if (!patchlib_is_valid(f_use_sound)) {
-                patch_handle_t item_cls = patchlib_type_get_type("Terraria", "Item");
+                item_cls = patchlib_type_get_type("Terraria", "Item");
                 if (patchlib_is_valid(item_cls)) {
                     f_use_sound = patchlib_type_get_field(item_cls, "UseSound");
-                    patchlib_free(item_cls);
+                    /* 桌面端 field 依附 class，class 必须常驻（不 free） */
                 }
             }
             if (patchlib_is_valid(f_use_sound))
