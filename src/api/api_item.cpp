@@ -274,6 +274,15 @@ namespace lualoader::lua_api {
         terraria_recipe_manager_register_callback(lua_item_recipes);
     }
 
+    void shutdown_item_hooks() {
+        if (!g_lua_item_hooks_registered) return;
+        if (terraria_language_manager_unregister_callback)
+            terraria_language_manager_unregister_callback(lua_item_language);
+        if (terraria_recipe_manager_unregister_callback)
+            terraria_recipe_manager_unregister_callback(lua_item_recipes);
+        g_lua_item_hooks_registered = false;
+    }
+
     /// 贴图相对路径解析：依次尝试 lib/Image、lib、<Resources>/Image、<Resources>/Resources/Image、<Resources>。
     std::string resolve_item_image(const std::string &private_dir, const std::string &mod_dir,
                                           const std::string &rel) {
@@ -411,7 +420,7 @@ namespace lualoader::lua_api {
                                 const patch_type_t t = patchlib_field_get_type(f);
                                 uint64_t v = 0;
                                 if (try_read_patch_value(L, -1, t, &v)) {
-                                    e->defaults.push_back({f, t, v});
+                                    e->defaults.push_back({f, t, v, ref_default_value(L, -1, t)});
                                 } else {
                                     LOG_WARN("[mod.item] {}: 字段 {} 值类型不匹配，已忽略",
                                              item_name, fname);
@@ -549,6 +558,8 @@ namespace lualoader::lua_api {
             LOG_ERROR("[mod.item] {}: 注册失败", item_name);
             if (e->defaults_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->defaults_ref);
             if (e->can_use_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->can_use_ref);
+            if (e->use_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->use_ref);
+            unref_default_values(L, e->defaults);
             if (patchlib_is_valid(e->use_sound)) patchlib_free(e->use_sound);
             delete e;
             lua_pushnil(L);
@@ -595,13 +606,16 @@ namespace lualoader::lua_api {
         for (size_t i = g_lua_items.size(); i-- > 0;) {
             LuaItemEntry *e = g_lua_items[i];
             if (e->owner != handle) continue;
-            if (e->registered && e->item.runtime_id >= 0)
-                terraria_item_manager_unregister_item_by_id(e->item.runtime_id);
+            if (e->registered)
+                terraria_item_manager_unregister_item(&e->item);
             if (handle->L) {
                 if (e->defaults_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->defaults_ref);
                 if (e->can_use_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->can_use_ref);
+                if (e->use_ref != LUA_NOREF)
+                    luaL_unref(handle->L, LUA_REGISTRYINDEX, e->use_ref);
+                unref_default_values(handle->L, e->defaults);
             }
             if (patchlib_is_valid(e->use_sound)) patchlib_free(e->use_sound);
             delete e;

@@ -115,4 +115,10 @@ namespace lualoader::lua_api {
         }
     }
 
+    void shutdown_global_hooks() {
+        shutdown_item_hooks();
+        shutdown_buff_hooks();
+        shutdown_recipe_hooks();
+    }
+
 } // namespace lualoader::lua_api

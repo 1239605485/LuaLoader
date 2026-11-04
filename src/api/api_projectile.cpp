@@ -221,7 +221,7 @@ namespace lualoader::lua_api {
                                 const patch_type_t t = patchlib_field_get_type(f);
                                 uint64_t v = 0;
                                 if (try_read_patch_value(L, -1, t, &v)) {
-                                    e->defaults.push_back({f, t, v});
+                                    e->defaults.push_back({f, t, v, ref_default_value(L, -1, t)});
                                 } else {
                                     LOG_WARN("[mod.projectile] {}: 字段 {} 值类型不匹配，已忽略",
                                              proj_name, fname);
@@ -310,6 +310,7 @@ namespace lualoader::lua_api {
             if (e->hit_npc_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->hit_npc_ref);
             if (e->hit_player_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->hit_player_ref);
             if (e->tile_collide_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->tile_collide_ref);
+            unref_default_values(L, e->defaults);
             delete e;
             lua_pushnil(L);
             return 1;
@@ -348,9 +349,8 @@ namespace lualoader::lua_api {
         for (size_t i = g_lua_projectiles.size(); i-- > 0;) {
             LuaProjectileEntry *e = g_lua_projectiles[i];
             if (e->owner != handle) continue;
-            if (e->registered && e->projectile.runtime_id >= 0)
-                terraria_projectile_manager_unregister_projectile_by_id(
-                        e->projectile.runtime_id);
+            if (e->registered)
+                terraria_projectile_manager_unregister_projectile(&e->projectile);
             if (handle->L) {
                 if (e->defaults_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->defaults_ref);
@@ -364,6 +364,7 @@ namespace lualoader::lua_api {
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->hit_player_ref);
                 if (e->tile_collide_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->tile_collide_ref);
+                unref_default_values(handle->L, e->defaults);
             }
             delete e;
             g_lua_projectiles.erase(g_lua_projectiles.begin() + static_cast<long>(i));

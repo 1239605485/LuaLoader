@@ -13,10 +13,9 @@ namespace lualoader::lua_api {
         return h;
     }
 
-    /// 由 Lua GC 托管的内核对象句柄：__gc 时自动释放（Android 上释放为空操作）
-
     /// 复制内核对象句柄，使其生命周期独立于 hook 调用。
-    /// 桌面端为新 GCHandle（指向同一对象，读写字段仍作用于原对象）；Android 直接返回原句柄。
+    /// 桌面端为新 GCHandle（指向同一对象，读写字段仍作用于原对象）；Android 直接返回原句柄，
+    /// 由 push_owned_handle 建立 GC 强引用。
     patch_handle_t copy_handle(const patch_handle_t h) {
 #if defined(__ANDROID__)
         return h;
@@ -25,7 +24,20 @@ namespace lualoader::lua_api {
 #endif
     }
 
-    /// 压入一个由 Lua GC 托管的句柄（nil 安全）
+    /// 释放托管句柄持有的内核资源：Android 解除 GC 强引用，桌面端释放 GCHandle
+    void release_owned_handle(OwnedHandle *ud) {
+        if (!ud->handle) return;
+#if defined(__ANDROID__)
+        patchlib_object_unroot(ud->root);
+        ud->root = nullptr;
+#else
+        patchlib_free(ud->handle);
+#endif
+        ud->handle = nullptr;
+    }
+
+    /// 压入一个由 Lua GC 托管的句柄（nil 安全）。
+    /// Android 句柄是裸对象指针，必须建立 GC 强引用，否则托管 GC 回收对象后该句柄悬空。
     void push_owned_handle(lua_State *L, const patch_handle_t h) {
         if (!h) {
             lua_pushnil(L);
@@ -33,17 +45,34 @@ namespace lualoader::lua_api {
         }
         auto *ud = static_cast<OwnedHandle *>(lua_newuserdatauv(L, sizeof(OwnedHandle), 0));
         ud->handle = h;
+#if defined(__ANDROID__)
+        ud->root = patchlib_object_root(h);
+#else
+        ud->root = nullptr;
+#endif
         luaL_setmetatable(L, OWNED_HANDLE_MT);
     }
 
     /// 托管句柄的 __gc：Lua GC 回收时释放内核句柄，避免泄漏
     int l_owned_handle_gc(lua_State *L) {
         auto *ud = static_cast<OwnedHandle *>(luaL_checkudata(L, 1, OWNED_HANDLE_MT));
-        if (ud && ud->handle) {
-            patchlib_free(ud->handle);
-            ud->handle = nullptr;
-        }
+        release_owned_handle(ud);
         return 0;
+    }
+
+    /// 为注册 defaults 的引用字段保存来源值；数值字段不需要引用
+    int ref_default_value(lua_State *L, const int idx, const patch_type_t type) {
+        if (type != PATCH_OBJECT && type != PATCH_POINTER) return LUA_NOREF;
+        lua_pushvalue(L, idx);
+        return luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+
+    void unref_default_values(lua_State *L, std::vector<LuaItemFieldValue> &defaults) {
+        if (!L) return;
+        for (auto &d: defaults) {
+            if (d.ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, d.ref);
+            d.ref = LUA_NOREF;
+        }
     }
 
     void push_handle(lua_State *L, const patch_handle_t h) {
@@ -140,10 +169,17 @@ namespace lualoader::lua_api {
                 break;
             case PATCH_POINTER:
             case PATCH_OBJECT:
+                if (!lua_isnoneornil(L, idx) &&
+                    lua_type(L, idx) != LUA_TLIGHTUSERDATA &&
+                    !luaL_testudata(L, idx, OWNED_HANDLE_MT)) {
+                    luaL_error(L, "handle or nil expected");
+                }
                 *static_cast<void **>(out) = to_handle(L, idx);
                 break;
             case PATCH_VOID:
+                break;
             default:
+                luaL_error(L, "unsupported value type");
                 break;
         }
         return true;
@@ -197,11 +233,17 @@ namespace lualoader::lua_api {
             }
             case PATCH_POINTER:
             case PATCH_OBJECT:
+                if (!lua_isnoneornil(L, idx) &&
+                    lua_type(L, idx) != LUA_TLIGHTUSERDATA &&
+                    !luaL_testudata(L, idx, OWNED_HANDLE_MT)) {
+                    return false;
+                }
                 *static_cast<void **>(out) = to_handle(L, idx);
                 return true;
             case PATCH_VOID:
-            default:
                 return true;
+            default:
+                return false;
         }
     }
 

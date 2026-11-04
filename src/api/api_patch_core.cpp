@@ -266,6 +266,10 @@ namespace lualoader::lua_api {
             instance = to_handle(L, 2);
             arg_start = 3;
         }
+        if (sig.return_type == PATCH_STRUCT) {
+            patchlib_method_signature_free(&sig);
+            return luaL_error(L, "struct return type is not supported");
+        }
 
         uint64_t storage[MAX_CALL_ARGS][1] = {};
         void *argv[MAX_CALL_ARGS] = {};
@@ -291,10 +295,7 @@ namespace lualoader::lua_api {
 
     static int l_patch_free(lua_State *L) {
         if (auto *ud = static_cast<OwnedHandle *>(luaL_testudata(L, 1, OWNED_HANDLE_MT))) {
-            if (ud->handle) {
-                patchlib_free(ud->handle);
-                ud->handle = nullptr;
-            }
+            release_owned_handle(ud);
             return 0;
         }
         patchlib_free(to_handle(L, 1));

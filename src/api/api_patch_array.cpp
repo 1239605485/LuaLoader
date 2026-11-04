@@ -152,27 +152,62 @@ namespace lualoader::lua_api {
         return n;
     }
 
+    static bool array_is_reference(const patch_handle_t array, const size_t elem_bytes) {
+        return patchlib_array_element_is_reference
+                   ? patchlib_array_element_is_reference(array)
+                   : (elem_bytes == sizeof(void *));
+    }
+
+    static bool is_array_type_compatible(const size_t raw_elem_bytes, const bool is_ref, const patch_type_t type) {
+        if (type == PATCH_OBJECT) {
+            return is_ref && (raw_elem_bytes == 0 || raw_elem_bytes == sizeof(void *));
+        }
+        if (is_ref) return false;
+        if (type == PATCH_POINTER) {
+            return raw_elem_bytes == 0 || raw_elem_bytes == sizeof(void *);
+        }
+        if (type == PATCH_CHAR) {
+            return raw_elem_bytes == 0 || raw_elem_bytes == 1 || raw_elem_bytes == 2;
+        }
+        const size_t expected = patch_scalar_size(type);
+        if (expected == 0) return false;
+        return raw_elem_bytes == 0 || raw_elem_bytes == expected;
+    }
+
     /// 数组取元素。第三个参数为元素类型名，省略时按对象(指针)处理。
     static int l_patch_array_at(lua_State *L) {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
-        /* 关键：内核按元素真实大小 memcpy，缓冲必须够大（原来固定 8 字节会写穿栈） */
-        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        const size_t raw_elem_bytes = patchlib_array_element_size(array);
+        const size_t elem_bytes = array_element_bytes(array);
+        const bool is_ref = array_is_reference(array, elem_bytes);
+
+        patch_type_t type = PATCH_OBJECT;
+        bool want_string = false;
+        if (!lua_isnoneornil(L, 3)) {
+            const char *type_name = luaL_checkstring(L, 3);
+            if (std::strcmp(type_name, "string") == 0) {
+                want_string = true;
+                type = PATCH_OBJECT;
+            } else if (!type_from_name(type_name, &type)) {
+                return luaL_error(L, "unknown type name: %s", type_name);
+            }
+            if (!is_array_type_compatible(raw_elem_bytes, is_ref, type)) {
+                return luaL_error(L, "array element type mismatch for '%s'", type_name);
+            }
+        }
+
+        /* 关键：内核按元素真实大小 memcpy，同时标量读取至少需要 8 字节安全缓冲 */
+        std::vector<unsigned char> storage(elem_bytes >= 8 ? elem_bytes : 8, 0);
         void *buffer = storage.data();
         if (!patchlib_array_at(array, index, buffer)) {
             lua_pushnil(L);
             return 1;
         }
         if (lua_isnoneornil(L, 3)) {
-            /* 省略类型只对「引用类型元素」的数组返回对象句柄。
-               64 位可用元素大小兜底；32 位标量和指针同为 4 字节，
-               必须问内核元素类型（float[] / int[] 等标量返回 nil）。 */
-            const bool is_ref =
-                patchlib_array_element_is_reference
-                    ? patchlib_array_element_is_reference(array)
-                    : (array_element_bytes(array) >= sizeof(void *));
-            if (!is_ref) {
+            /* 省略类型只对「引用类型元素」的数组返回对象句柄。 */
+            if (!is_ref || (raw_elem_bytes != 0 && raw_elem_bytes != sizeof(void *))) {
                 lua_pushnil(L);
                 return 1;
             }
@@ -181,14 +216,9 @@ namespace lualoader::lua_api {
             else lua_pushnil(L);
             return 1;
         }
-        const char *type_name = luaL_checkstring(L, 3);
-        if (std::strcmp(type_name, "string") == 0) {
+        if (want_string) {
             push_managed_string(L, *static_cast<void **>(buffer));
             return 1;
-        }
-        patch_type_t type;
-        if (!type_from_name(type_name, &type)) {
-            return luaL_error(L, "unknown type name: %s", type_name);
         }
         push_patch_value(L, type, buffer);
         return 1;
@@ -213,8 +243,8 @@ namespace lualoader::lua_api {
             *static_cast<float *>(out) = static_cast<float>(lua_tonumber(L, idx));
             return PATCH_FLOAT;
         }
-        if (t == LUA_TLIGHTUSERDATA) {
-            *static_cast<void **>(out) = lua_touserdata(L, idx);
+        if (t == LUA_TLIGHTUSERDATA || luaL_testudata(L, idx, OWNED_HANDLE_MT)) {
+            *static_cast<void **>(out) = to_handle(L, idx);
             return PATCH_OBJECT;
         }
         if (t == LUA_TSTRING) {
@@ -223,13 +253,17 @@ namespace lualoader::lua_api {
             *static_cast<void **>(out) = s;
             return PATCH_OBJECT;
         }
-        *static_cast<void **>(out) = nullptr;
-        return PATCH_OBJECT;
+        if (t == LUA_TNIL || t == LUA_TNONE) {
+            *static_cast<void **>(out) = nullptr;
+            return PATCH_OBJECT;
+        }
+        luaL_error(L, "unsupported array element value type: %s", luaL_typename(L, idx));
+        return PATCH_VOID;
     }
 
     /// 计算单个元素的写入缓冲；type_idx 为显式类型参数位置（无则按值推断）
-    static void read_element(lua_State *L, const int val_idx, const int type_idx, void *out,
-                             std::vector<patch_handle_t> &owned) {
+    static patch_type_t read_element(lua_State *L, const int val_idx, const int type_idx, void *out,
+                                     std::vector<patch_handle_t> &owned) {
         if (!lua_isnoneornil(L, type_idx)) {
             const char *tn = luaL_checkstring(L, type_idx);
             if (std::strcmp(tn, "string") == 0 || std::strcmp(tn, "object") == 0) {
@@ -238,16 +272,21 @@ namespace lualoader::lua_api {
                     owned.push_back(s);
                     *static_cast<void **>(out) = s;
                 } else {
+                    if (!lua_isnoneornil(L, val_idx) &&
+                        lua_type(L, val_idx) != LUA_TLIGHTUSERDATA &&
+                        !luaL_testudata(L, val_idx, OWNED_HANDLE_MT)) {
+                        luaL_error(L, "handle, string, or nil expected for '%s'", tn);
+                    }
                     *static_cast<void **>(out) = to_handle(L, val_idx);
                 }
-                return;
+                return PATCH_OBJECT;
             }
             patch_type_t type;
             if (!type_from_name(tn, &type)) luaL_error(L, "unknown type name: %s", tn);
             read_patch_value(L, val_idx, type, out);
-            return;
+            return type;
         }
-        infer_set_type(L, val_idx, out, owned);
+        return infer_set_type(L, val_idx, out, owned);
     }
 
     /// mod.patch.array_set(array, index, value[, type]) -> bool
@@ -255,10 +294,17 @@ namespace lualoader::lua_api {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
         const size_t index = static_cast<size_t>(luaL_checkinteger(L, 2));
-        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        const size_t raw_elem_bytes = patchlib_array_element_size(array);
+        const size_t elem_bytes = array_element_bytes(array);
+        const bool is_ref = array_is_reference(array, elem_bytes);
+        std::vector<unsigned char> storage(elem_bytes >= 8 ? elem_bytes : 8, 0);
         void *buffer = storage.data();
         std::vector<patch_handle_t> owned;
-        read_element(L, 3, 4, buffer, owned);
+        const patch_type_t type = read_element(L, 3, 4, buffer, owned);
+        if (!is_array_type_compatible(raw_elem_bytes, is_ref, type)) {
+            for (const patch_handle_t h: owned) patchlib_free(h);
+            return luaL_error(L, "array element type mismatch");
+        }
         const bool ok = patchlib_array_set(array, index, buffer);
         for (const patch_handle_t h: owned) patchlib_free(h);
         lua_pushboolean(L, ok);
@@ -269,10 +315,17 @@ namespace lualoader::lua_api {
     static int l_patch_array_fill(lua_State *L) {
         const patch_handle_t array = to_handle(L, 1);
         if (!array) return luaL_error(L, "invalid array handle");
-        std::vector<unsigned char> storage(array_element_bytes(array), 0);
+        const size_t raw_elem_bytes = patchlib_array_element_size(array);
+        const size_t elem_bytes = array_element_bytes(array);
+        const bool is_ref = array_is_reference(array, elem_bytes);
+        std::vector<unsigned char> storage(elem_bytes >= 8 ? elem_bytes : 8, 0);
         void *buffer = storage.data();
         std::vector<patch_handle_t> owned;
-        read_element(L, 2, 3, buffer, owned);
+        const patch_type_t type = read_element(L, 2, 3, buffer, owned);
+        if (!is_array_type_compatible(raw_elem_bytes, is_ref, type)) {
+            for (const patch_handle_t h: owned) patchlib_free(h);
+            return luaL_error(L, "array element type mismatch");
+        }
         const bool ok = patchlib_array_fill(array, buffer);
         for (const patch_handle_t h: owned) patchlib_free(h);
         lua_pushboolean(L, ok);

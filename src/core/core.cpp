@@ -23,6 +23,7 @@
  *******************************************************************************/
 
 #include "core.hpp"
+#include "lua_api.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -281,9 +282,10 @@ ml_result_t lualoader::core::init_ml(ml_entry_t *ml_entry) {
     return ML_SUCCESS;
 }
 
-ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
+    ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
     LOG_INFO("Cleaning up LuaLoader...");
 
+    terraria_net_set_mod_message_handler(nullptr);
 
 #ifdef LUALOADER_GUI
     gui::shutdown();
@@ -295,6 +297,8 @@ ml_result_t lualoader::core::cleanup_ml(ml_entry_t *ml_entry) {
         delete entry.second;
     }
     lua_mod_handles.clear();
+
+    lua_api::shutdown_global_hooks();
 
     for (auto &entry: lua_mod_multiplayer_infos) {
         free(const_cast<char *>(entry.second->mod_id));

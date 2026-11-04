@@ -55,4 +55,7 @@ namespace lualoader::lua_api {
     /// 清掉该 Mod 通过 mod.recipe 注册的配方
     void unregister_recipes(lua_mod_handle_t *handle);
 
+    /// 卸载 LuaLoader 前撤销向内核登记的全局语言/配方回调
+    void shutdown_global_hooks();
+
 } // namespace lualoader::lua_api

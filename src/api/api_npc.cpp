@@ -186,7 +186,7 @@ namespace lualoader::lua_api {
                                 const patch_type_t t = patchlib_field_get_type(f);
                                 uint64_t v = 0;
                                 if (try_read_patch_value(L, -1, t, &v))
-                                    e->defaults.push_back({f, t, v});
+                                    e->defaults.push_back({f, t, v, ref_default_value(L, -1, t)});
                                 else
                                     LOG_WARN("[mod.npc] {}: 字段 {} 值类型不匹配，已忽略",
                                              npc_name, fname);
@@ -270,6 +270,7 @@ namespace lualoader::lua_api {
             if (e->defaults_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->defaults_ref);
             if (e->ai_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->ai_ref);
             if (e->on_death_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->on_death_ref);
+            unref_default_values(L, e->defaults);
             delete e;
             lua_pushnil(L);
             return 1;
@@ -339,8 +340,8 @@ namespace lualoader::lua_api {
         for (size_t i = g_lua_npcs.size(); i-- > 0;) {
             LuaNpcEntry *e = g_lua_npcs[i];
             if (e->owner != handle) continue;
-            if (e->registered && e->npc.runtime_id >= 0)
-                terraria_npc_manager_unregister_npc_by_id(e->npc.runtime_id);
+            if (e->registered)
+                terraria_npc_manager_unregister_npc(&e->npc);
             if (handle->L) {
                 if (e->defaults_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->defaults_ref);
@@ -348,6 +349,7 @@ namespace lualoader::lua_api {
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->ai_ref);
                 if (e->on_death_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->on_death_ref);
+                unref_default_values(handle->L, e->defaults);
             }
             delete e;
             g_lua_npcs.erase(g_lua_npcs.begin() + static_cast<long>(i));

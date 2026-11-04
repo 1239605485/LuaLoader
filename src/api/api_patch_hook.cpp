@@ -61,9 +61,9 @@ namespace lualoader::lua_api {
     static const std::array<postfix_callback_t, MAX_HOOK_SLOTS> g_postfix_table =
             make_postfix_table(std::make_integer_sequence<int, MAX_HOOK_SLOTS>{});
 
-    /// 压入一个参数值；copy_handles 时把对象/指针句柄复制为 GC 托管句柄
+    /// 压入一个参数值；copy_handles 时把托管对象句柄复制为 GC 托管句柄（原生指针只借用，不托管）
     static void push_hook_arg_value(lua_State *L, const patch_type_t type, const void *value, const bool copy_handles) {
-        if (copy_handles && (type == PATCH_OBJECT || type == PATCH_POINTER) && value) {
+        if (copy_handles && type == PATCH_OBJECT && value) {
             auto *ptr = *static_cast<void *const *>(value);
             if (ptr) {
                 push_owned_handle(L, copy_handle(ptr));

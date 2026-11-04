@@ -66,11 +66,13 @@ namespace lualoader::lua_api {
 
     struct OwnedHandle {
         patch_handle_t handle;
+        void *root; ///< Android：托管对象的 GC 强引用
     };
 
     // ---- 基础工具 ----
     lua_mod_handle_t *get_handle(lua_State *L);
     patch_handle_t copy_handle(patch_handle_t h);
+    void release_owned_handle(OwnedHandle *ud);
     void push_owned_handle(lua_State *L, patch_handle_t h);
     int l_owned_handle_gc(lua_State *L);
     void push_handle(lua_State *L, patch_handle_t h);
@@ -97,7 +99,10 @@ namespace lualoader::lua_api {
         patch_handle_t field;
         patch_type_t type;
         uint64_t value;
+        int ref; ///< 引用类型（object/pointer）字段的 Lua registry 引用，保活来源；数值字段为 LUA_NOREF
     };
+    int ref_default_value(lua_State *L, int idx, patch_type_t type);
+    void unref_default_values(lua_State *L, std::vector<LuaItemFieldValue> &defaults);
     void item_field_write(patch_handle_t field, patch_handle_t inst,
                           patch_type_t type, const void *value);
     void premultiply_alpha(unsigned char *buf, size_t sz);
@@ -135,5 +140,8 @@ namespace lualoader::lua_api {
     void unregister_recipes(lua_mod_handle_t *handle);
     void unregister_buffs(lua_mod_handle_t *handle);
     void unregister_npcs(lua_mod_handle_t *handle);
+    void shutdown_item_hooks();
+    void shutdown_buff_hooks();
+    void shutdown_recipe_hooks();
 
 } // namespace lualoader::lua_api

@@ -253,6 +253,13 @@ namespace lualoader::lua_api {
         terraria_language_manager_register_callback(lua_buff_language);
     }
 
+    void shutdown_buff_hooks() {
+        if (!g_buff_lang_hooked) return;
+        if (terraria_language_manager_unregister_callback)
+            terraria_language_manager_unregister_callback(lua_buff_language);
+        g_buff_lang_hooked = false;
+    }
+
     // ---- register ----
 
     static int l_buff_register(lua_State *L) {
@@ -435,8 +442,8 @@ namespace lualoader::lua_api {
         for (size_t i = g_lua_buffs.size(); i-- > 0;) {
             LuaBuffEntry *e = g_lua_buffs[i];
             if (e->owner != handle) continue;
-            if (e->registered && e->buff.runtime_id >= 0)
-                terraria_buff_manager_unregister_buff_by_id(e->buff.runtime_id);
+            if (e->registered)
+                terraria_buff_manager_unregister_buff(&e->buff);
             if (handle->L) {
                 if (e->apply_ref != LUA_NOREF)
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->apply_ref);

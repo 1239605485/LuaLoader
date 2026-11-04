@@ -44,6 +44,13 @@ namespace lualoader::lua_api {
         terraria_recipe_manager_register_callback(lua_recipe_apply);
     }
 
+    void shutdown_recipe_hooks() {
+        if (!g_recipe_hooked) return;
+        if (terraria_recipe_manager_unregister_callback)
+            terraria_recipe_manager_unregister_callback(lua_recipe_apply);
+        g_recipe_hooked = false;
+    }
+
     /// mod.recipe.add{ result = id|{id,count}, materials = {{id,count},...}, station = id }
     static int l_recipe_add(lua_State *L) {
         lua_mod_handle_t *h = get_handle(L);
