@@ -202,6 +202,7 @@ namespace lualoader::lua_api {
         const patch_handle_t f = patchlib_type_get_field(cls, "ActiveCulture");
         int c = 0;
         if (f) patchlib_field_get_value(f, nullptr, &c);
+        patchlib_free(f);
         patchlib_free(cls);
         return c;
     }

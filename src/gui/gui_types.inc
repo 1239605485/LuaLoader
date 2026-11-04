@@ -70,12 +70,15 @@
             if (!type || !name) return a;
             a.field = patchlib_type_get_field(type, name);
             if (!a.field || !patchlib_is_valid(a.field)) {
+                if (a.field) patchlib_free(a.field);
                 a.field = nullptr;
                 const patch_handle_t prop = patchlib_type_get_property(type, name);
                 if (prop && patchlib_is_valid(prop)) {
                     a.getter = patchlib_property_get_get_method(prop);
                     a.setter = patchlib_property_get_set_method(prop);
                 }
+                // prop 只用于取访问器方法，本身不需要长期保留。
+                if (prop) patchlib_free(prop);
             }
             return a;
         }
@@ -214,7 +217,9 @@
                 g_gfx.a_mouse_y = resolve_accessor(g_gfx.t_main, "mouseY");
                 g_gfx.a_mouse_left = resolve_accessor(g_gfx.t_main, "mouseLeft");
                 g_gfx.a_mouse_left_release = resolve_accessor(g_gfx.t_main, "mouseLeftRelease");
-                if(auto input=patchlib_type_get_type("Terraria.GameInput","PlayerInput"))g_gfx.a_scroll_wheel=resolve_accessor(input,"ScrollWheelDelta");
+                const auto t_input=patchlib_type_get_type("Terraria.GameInput","PlayerInput");
+                if(t_input)g_gfx.a_scroll_wheel=resolve_accessor(t_input,"ScrollWheelDelta");
+                /* t_input 不能释放：桌面端 a_scroll_wheel 若解析成字段会依附 class。 */
                 g_gfx.a_mouse_right = resolve_accessor(g_gfx.t_main, "mouseRight");
                 g_gfx.a_show_splash = resolve_accessor(g_gfx.t_main, "showSplash");
             }
@@ -236,12 +241,14 @@
                 g_gfx.m_sb_end = get_method(t_sb, "End", 0);
                 g_gfx.m_sb_begin8 = get_method(t_sb, "Begin", 8);
             }
+            patchlib_free(t_sb);
 
             const patch_handle_t t_utils = patchlib_type_get_type("Terraria", "Utils");
             if (t_utils) {
                 g_gfx.m_draw_inv_bg = get_method(t_utils, "DrawInvBG", 3);
                 g_gfx.m_draw_border_string = get_method(t_utils, "DrawBorderString", 8);
             }
+            patchlib_free(t_utils);
 
 #if defined(__ANDROID__)
             const patch_handle_t t_runner = patchlib_type_get_type("", "XNAUnityRunner");
@@ -249,6 +256,7 @@
                 g_gfx.m_setup_rendering_ui = get_method(t_runner, "SetupRenderingUI", 1);
                 g_gfx.m_adjust_real_screen = get_method(t_runner, "AdjustRealScreenForUI", 1);
             }
+            patchlib_free(t_runner);
 
             const patch_handle_t t_cm = patchlib_type_get_type("", "CursorManager");
             if (t_cm) {
@@ -256,6 +264,7 @@
                 g_gfx.m_cm_get_num_cursors = get_method(t_cm, "GetNumCursors", 0);
                 g_gfx.m_cm_get_cursor = get_method(t_cm, "GetCursor", 1);
             }
+            patchlib_free(t_cm);
 
             const patch_handle_t t_cursor = patchlib_type_get_type("", "Cursor");
             if (t_cursor) {
@@ -265,6 +274,7 @@
                 g_gfx.f_cursor_ignore_world = patchlib_type_get_field(t_cursor, "IgnoreForWorld");
                 g_gfx.f_cursor_ignore = patchlib_type_get_field(t_cursor, "Ignore");
             }
+            patchlib_free(t_cursor);
 #endif
 
             g_gfx.usable = g_gfx.f_sprite_batch && g_gfx.m_sb_begin && g_gfx.m_sb_end &&
@@ -278,6 +288,45 @@
                      reinterpret_cast<void *>(g_gfx.m_draw_border_string),
                      g_gfx.a_show_splash.valid(),
                      g_gfx.usable);
+        }
+
+        /// 释放 GUI 长期缓存的反射句柄（shutdown 时调用）。
+        void release_gfx() {
+            auto release_accessor = [](Accessor &a) {
+                patchlib_free(a.field);
+                patchlib_free(a.getter);
+                patchlib_free(a.setter);
+                a = Accessor{};
+            };
+            patchlib_free(g_gfx.t_main);
+            patchlib_free(g_gfx.f_sprite_batch);
+            patchlib_free(g_gfx.m_sb_begin);
+            patchlib_free(g_gfx.m_sb_begin8);
+            patchlib_free(g_gfx.m_sb_end);
+            patchlib_free(g_gfx.m_draw_inv_bg);
+            patchlib_free(g_gfx.m_draw_border_string);
+            release_accessor(g_gfx.a_screen_w);
+            release_accessor(g_gfx.a_screen_h);
+            release_accessor(g_gfx.a_mouse_x);
+            release_accessor(g_gfx.a_mouse_y);
+            release_accessor(g_gfx.a_mouse_left);
+            release_accessor(g_gfx.a_mouse_left_release);
+            release_accessor(g_gfx.a_mouse_right);
+            release_accessor(g_gfx.a_scroll_wheel);
+            release_accessor(g_gfx.a_show_splash);
+#if defined(__ANDROID__)
+            patchlib_free(g_gfx.m_setup_rendering_ui);
+            patchlib_free(g_gfx.m_adjust_real_screen);
+            patchlib_free(g_gfx.f_cm_instance);
+            patchlib_free(g_gfx.m_cm_get_num_cursors);
+            patchlib_free(g_gfx.m_cm_get_cursor);
+            patchlib_free(g_gfx.f_cursor_pos);
+            patchlib_free(g_gfx.f_cursor_down);
+            patchlib_free(g_gfx.f_cursor_id);
+            patchlib_free(g_gfx.f_cursor_ignore_world);
+            patchlib_free(g_gfx.f_cursor_ignore);
+#endif
+            g_gfx = Gfx{};
         }
 
         // ====================================================================

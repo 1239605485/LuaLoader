@@ -8,9 +8,10 @@ namespace lualoader::lua_api {
     // Patchlib: 结构体字段(Vector2 等) / 数组
     // ========================================================================
 
-    // 注意: 不要调用 patchlib_field_get_size —— 内核的符号注入表里没有它，
-    // 在模块中会是 NULL 函数指针, 调用即崩溃。尺寸用 patchlib_field_get_type +
-    // get_size_from_patch_type 推断, 或由调用方显式给出。
+    // 注意: 桌面端 TPF 符号表没有 patchlib_field_get_size（指针为 NULL），
+    // 必须判空后才能调用；拿不到真实尺寸时退回调用方给出的宽度。
+
+    static size_t guess_field_size(patch_handle_t field);
 
     /// 读取字段的原始字节。Android/IL2CPP 走字段真实指针，桌面端走 get_value。
     static bool read_field_bytes(const patch_handle_t field, const patch_handle_t instance, void *out,
@@ -22,8 +23,14 @@ namespace lualoader::lua_api {
         std::memcpy(out, ptr, size);
         return true;
 #else
-        std::memset(out, 0, size);
-        patchlib_field_get_value(field, instance, out);
+        /* 内核按字段真实大小写入，先落临时缓冲再截取，避免越界 */
+        size_t fsz = patchlib_field_get_size ? patchlib_field_get_size(field) : guess_field_size(field);
+        if (fsz == 0 || fsz > 4096) fsz = size;
+        if (fsz < size) fsz = size;
+        const size_t bufsz = fsz < sizeof(void *) ? sizeof(void *) : fsz;
+        std::vector<unsigned char> tmp(bufsz, 0);
+        patchlib_field_get_value(field, instance, tmp.data());
+        std::memcpy(out, tmp.data(), size);
         return true;
 #endif
     }
@@ -38,7 +45,14 @@ namespace lualoader::lua_api {
         std::memcpy(ptr, in, size);
         return true;
 #else
-        patchlib_field_set_value(field, instance, const_cast<void *>(in));
+        /* 内核按字段真实大小读取，先补零到字段大小，避免读越界 */
+        size_t fsz = patchlib_field_get_size ? patchlib_field_get_size(field) : guess_field_size(field);
+        if (fsz == 0 || fsz > 4096) fsz = size;
+        if (fsz < size) fsz = size;
+        const size_t bufsz = fsz < sizeof(void *) ? sizeof(void *) : fsz;
+        std::vector<unsigned char> tmp(bufsz, 0);
+        std::memcpy(tmp.data(), in, size);
+        patchlib_field_set_value(field, instance, tmp.data());
         return true;
 #endif
     }
@@ -211,16 +225,19 @@ namespace lualoader::lua_api {
                 lua_pushnil(L);
                 return 1;
             }
-            void *ptr = *static_cast<void **>(buffer);
-            if (ptr) lua_pushlightuserdata(L, ptr);
-            else lua_pushnil(L);
+            push_returned_object(L, *static_cast<patch_handle_t *>(buffer));
             return 1;
         }
         if (want_string) {
-            push_managed_string(L, *static_cast<void **>(buffer));
+            const patch_handle_t s = *static_cast<patch_handle_t *>(buffer);
+            push_managed_string(L, s);
+            free_returned_object(s);
             return 1;
         }
-        push_patch_value(L, type, buffer);
+        if (type == PATCH_OBJECT)
+            push_returned_object(L, *static_cast<patch_handle_t *>(buffer));
+        else
+            push_patch_value(L, type, buffer);
         return 1;
     }
 
@@ -348,7 +365,10 @@ namespace lualoader::lua_api {
             if (type_from_name(tn, &bt)) elem_type = patchlib_get_basic_type(bt);
             if (!elem_type) elem_type = patchlib_type_get_type("", tn);
         }
-        push_owned_handle(L, elem_type ? patchlib_array_create(size, elem_type) : nullptr);
+        const patch_handle_t arr = elem_type ? patchlib_array_create(size, elem_type) : PATCH_NULL;
+        /* elem_type 是本函数自己取到的句柄，桌面端需要释放（数组已创建，不依赖它） */
+        if (elem_type) patchlib_free(elem_type);
+        push_owned_handle(L, arr);
         return 1;
     }
 
@@ -386,13 +406,13 @@ namespace lualoader::lua_api {
 
     /// mod.patch.property_get_method(prop) -> getter 方法句柄
     static int l_patch_property_get_method(lua_State *L) {
-        push_handle(L, patchlib_property_get_get_method(to_handle(L, 1)));
+        push_returned_object(L, patchlib_property_get_get_method(to_handle(L, 1)));
         return 1;
     }
 
     /// mod.patch.property_set_method(prop) -> setter 方法句柄
     static int l_patch_property_set_method(lua_State *L) {
-        push_handle(L, patchlib_property_get_set_method(to_handle(L, 1)));
+        push_returned_object(L, patchlib_property_get_set_method(to_handle(L, 1)));
         return 1;
     }
 
@@ -413,7 +433,7 @@ namespace lualoader::lua_api {
         std::vector<const char *> names;
         names.reserve(n);
         for (auto &s: store) names.push_back(s.c_str());
-        push_handle(L, type ? patchlib_type_get_method_by_param_names(type, name, n, names.data()) : nullptr);
+        push_returned_object(L, type ? patchlib_type_get_method_by_param_names(type, name, n, names.data()) : nullptr);
         return 1;
     }
 

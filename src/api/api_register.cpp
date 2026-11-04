@@ -5,7 +5,23 @@
 
 namespace lualoader::lua_api {
 
+    /// Lua 发生“无保护错误”时会调用这里：记录当前 hook 槽位与 traceback，便于定位
+    static int l_panic(lua_State *L) {
+        static bool in_panic = false;
+        const char *msg = lua_tostring(L, -1);
+        LOG_ERROR("[lua] PANIC (slot={}, phase={}): {}", g_active_hook_slot.load(),
+                  g_active_hook_phase.load(), msg ? msg : "<non-string error>");
+        if (!in_panic && msg) {
+            in_panic = true;
+            luaL_traceback(L, L, msg, 1);
+            if (const char *tb = lua_tostring(L, -1)) LOG_ERROR("[lua] {}", tb);
+            in_panic = false;
+        }
+        return 0;
+    }
+
     void register_api(lua_State *L, lua_mod_handle_t *handle) {
+        lua_atpanic(L, l_panic);
         lua_pushlightuserdata(L, handle);
         lua_setfield(L, LUA_REGISTRYINDEX, HANDLE_KEY);
 

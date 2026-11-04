@@ -227,6 +227,7 @@ namespace lualoader::lua_api {
                                              proj_name, fname);
                                 }
                             } else {
+                                patchlib_free(f);
                                 LOG_WARN("[mod.projectile] {}: 找不到 Projectile 字段 {}",
                                          proj_name, fname);
                             }

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <array>
+#include <atomic>
 #include <utility>
 
 extern "C" {
@@ -74,6 +75,9 @@ namespace lualoader::lua_api {
     patch_handle_t copy_handle(patch_handle_t h);
     void release_owned_handle(OwnedHandle *ud);
     void push_owned_handle(lua_State *L, patch_handle_t h);
+    /// 内核为“返回值”新分配的引用句柄：桌面端交给 Lua GC 释放，Android 保持借用
+    void push_returned_object(lua_State *L, patch_handle_t h);
+    void free_returned_object(patch_handle_t h);
     int l_owned_handle_gc(lua_State *L);
     void push_handle(lua_State *L, patch_handle_t h);
     patch_handle_t to_handle(lua_State *L, int idx);
@@ -119,6 +123,8 @@ namespace lualoader::lua_api {
     size_t patch_scalar_size(patch_type_t type);
 
     // ---- 钩子 ----
+    extern std::atomic<int> g_active_hook_slot;
+    extern std::atomic<int> g_active_hook_phase;
     int l_hook_remove(lua_State *L);
     void release_slot(int slot);
 

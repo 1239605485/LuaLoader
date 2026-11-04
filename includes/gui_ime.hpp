@@ -17,4 +17,7 @@ namespace lualoader::gui::ime {
     /// 结束时内部已 close()。非 Android 恒返回 1。
     int poll(std::string &text);
 
+    /// 关闭键盘并释放解析过程中缓存的反射句柄（GUI 卸载时调用）。
+    void shutdown();
+
 } // namespace lualoader::gui::ime

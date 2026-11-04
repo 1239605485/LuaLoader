@@ -191,6 +191,7 @@ namespace lualoader::lua_api {
                                     LOG_WARN("[mod.npc] {}: 字段 {} 值类型不匹配，已忽略",
                                              npc_name, fname);
                             } else {
+                                patchlib_free(f);
                                 LOG_WARN("[mod.npc] {}: 找不到 NPC 字段 {}",
                                          npc_name, fname);
                             }
@@ -273,6 +274,9 @@ namespace lualoader::lua_api {
             if (e->ai_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->ai_ref);
             if (e->on_death_ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, e->on_death_ref);
             unref_default_values(L, e->defaults);
+            patchlib_free(e->f_pos);
+            patchlib_free(e->f_width);
+            patchlib_free(e->f_height);
             delete e;
             lua_pushnil(L);
             return 1;
@@ -353,6 +357,10 @@ namespace lualoader::lua_api {
                     luaL_unref(handle->L, LUA_REGISTRYINDEX, e->on_death_ref);
                 unref_default_values(handle->L, e->defaults);
             }
+            patchlib_free(e->f_pos);
+            patchlib_free(e->f_width);
+            patchlib_free(e->f_height);
+            e->f_pos = e->f_width = e->f_height = PATCH_NULL;
             delete e;
             g_lua_npcs.erase(g_lua_npcs.begin() + static_cast<long>(i));
         }

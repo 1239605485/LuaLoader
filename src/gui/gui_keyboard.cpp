@@ -25,6 +25,8 @@ namespace {
     patch_handle_t m_get_pressed = PATCH_NULL; // static List<Keys> GetPressedKeys()
     patch_handle_t f_writing_text = PATCH_NULL; // static bool WritingText
     patch_handle_t f_list_items = PATCH_NULL;   // List<Keys>._items
+    patch_handle_t t_list_keys = PATCH_NULL;    // List<Keys> 类型句柄（f_list_items 的 class，必须常驻）
+    patch_handle_t t_main_keys = PATCH_NULL;    // Terraria.Main 类型句柄（keyInt/keyCount 的 class，必须常驻）
     // 输入法(IME)提交字符缓存：Main.keyInt / Main.keyCount
     patch_handle_t f_main_key_int = PATCH_NULL;
     patch_handle_t f_main_key_count = PATCH_NULL;
@@ -50,8 +52,13 @@ namespace {
         if (patchlib_is_valid(m_get_pressed)) {
             patch_method_signature_t sig;
             if (patchlib_method_get_signature(m_get_pressed, &sig)) {
-                if (patchlib_is_valid(sig.return_type_handle))
-                    f_list_items = patchlib_type_get_field(sig.return_type_handle, "_items");
+                if (patchlib_is_valid(sig.return_type_handle)) {
+                    t_list_keys = sig.return_type_handle;
+                    f_list_items = patchlib_type_get_field(t_list_keys, "_items");
+                    /* 桌面端 field 依附 class：把返回类型句柄从签名里摘出来常驻，
+                     * 否则 signature_free 会释放它，之后用 f_list_items 会崩。 */
+                    sig.return_type_handle = PATCH_NULL;
+                }
                 patchlib_method_signature_free(&sig);
             }
         }
@@ -62,11 +69,11 @@ namespace {
                  patchlib_is_valid(f_list_items) ? "ok" : "null");
 
         // 输入法(IME)提交字符：Main.keyInt / Main.keyCount
-        patch_handle_t t_main = patchlib_type_get_type("Terraria", "Main");
-        if (patchlib_is_valid(t_main)) {
-            f_main_key_int = patchlib_type_get_field(t_main, "keyInt");
-            f_main_key_count = patchlib_type_get_field(t_main, "keyCount");
-            patchlib_free(t_main);
+        t_main_keys = patchlib_type_get_type("Terraria", "Main");
+        if (patchlib_is_valid(t_main_keys)) {
+            f_main_key_int = patchlib_type_get_field(t_main_keys, "keyInt");
+            f_main_key_count = patchlib_type_get_field(t_main_keys, "keyCount");
+            /* 桌面端 field 依附 class，t_main_keys 必须常驻到 shutdown。 */
         }
         LOG_INFO("[kbd] resolve: Main.keyInt={} Main.keyCount={}",
                  patchlib_is_valid(f_main_key_int) ? "ok" : "null",
@@ -135,14 +142,32 @@ namespace lualoader::gui::kbd {
         g_shift_used = false;
     }
 
+    void shutdown() {
+        reset();
+        patchlib_free(t_player_input);
+        patchlib_free(m_get_pressed);
+        patchlib_free(f_writing_text);
+        patchlib_free(f_list_items);
+        patchlib_free(f_main_key_int);
+        patchlib_free(f_main_key_count);
+        patchlib_free(t_list_keys);
+        patchlib_free(t_main_keys);
+        t_player_input = m_get_pressed = f_writing_text = f_list_items = PATCH_NULL;
+        t_list_keys = t_main_keys = PATCH_NULL;
+        f_main_key_int = f_main_key_count = PATCH_NULL;
+        g_resolved = false;
+    }
+
     void poll(Event &out) {
         resolve();
         if (!patchlib_is_valid(m_get_pressed)) return;
 
         patch_handle_t list = PATCH_NULL;
         if (!patchlib_method_invoke_args(m_get_pressed, PATCH_NULL, &list, NULL) ||
-            !patchlib_is_valid(list))
+            !patchlib_is_valid(list)) {
+            patchlib_free(list);
             return;
+        }
 
         std::set<int> now;
         if (patchlib_is_valid(f_list_items)) {
@@ -154,6 +179,8 @@ namespace lualoader::gui::kbd {
                     int32_t key = 0;
                     if (patchlib_array_at(arr, i, &key)) now.insert(key);
                 }
+                patchlib_free(arr);
+            } else {
                 patchlib_free(arr);
             }
         }

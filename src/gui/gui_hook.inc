@@ -190,6 +190,12 @@
             g_hover_gui = false;
 
             patch_handle_t sb = read_static_object(g_gfx.f_sprite_batch);
+            // 桌面端 read_static_object 每次都会新建 GCHandle，必须在本帧结束时释放，
+            // 否则渲染钩子每帧都会泄漏一个句柄（越玩越卡的主因之一）。
+            struct StaticObjectGuard {
+                patch_handle_t h;
+                ~StaticObjectGuard() { patchlib_free(h); }
+            } sb_guard{sb};
             if (!sb || !patchlib_is_valid(sb)) return;
 
             g_sb = sb;

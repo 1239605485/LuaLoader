@@ -66,19 +66,20 @@ namespace lualoader::lua_api {
         const size_t n = tefstd_vector_size(&fields);
         for (size_t i = 0; i < n; ++i) {
             const patch_handle_t fh = *static_cast<patch_handle_t *>(tefstd_vector_at(&fields, i));
-            if (!fh || patchlib_field_is_static(fh)) continue;
+            if (!fh) continue;
+            if (patchlib_field_is_static(fh)) { patchlib_free(fh); continue; }
             const patch_type_t ft = patchlib_field_get_type(fh);
             size_t sz = 0, al = 1;
+            bool field_ok = true;
             if (ft == PATCH_STRUCT) {
                 const patch_handle_t sub = patchlib_field_get_type_handle(fh);
-                if (!compute_struct_layout(sub, &sz, &al)) {
-                    ok = false;
-                    break;
-                }
+                if (!compute_struct_layout(sub, &sz, &al)) field_ok = false;
+                patchlib_free(sub);
             } else if (!struct_field_layout(ft, &sz, &al)) {
-                ok = false;
-                break;
+                field_ok = false;
             }
+            patchlib_free(fh);
+            if (!field_ok) { ok = false; break; }
             offset = (offset + al - 1) & ~(al - 1);
             offset += sz;
             if (al > max_align) max_align = al;

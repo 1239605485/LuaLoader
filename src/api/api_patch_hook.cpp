@@ -1,5 +1,7 @@
 #include "api_internal.hpp"
 
+#include <atomic>
+
 namespace lualoader::lua_api {
 
     // ========================================================================
@@ -19,6 +21,9 @@ namespace lualoader::lua_api {
     };
 
     static HookSlot g_hook_slots[MAX_HOOK_SLOTS];
+    /// 诊断：当前正在派发的 hook 槽位/阶段，供 Lua panic 时定位
+    std::atomic<int> g_active_hook_slot{-1};
+    std::atomic<int> g_active_hook_phase{0}; // 1=prefix 2=postfix
     static uint64_t g_hook_generation = 0;
 
     struct HookUserdata {
@@ -84,6 +89,12 @@ namespace lualoader::lua_api {
             lua_pushlightuserdata(L, instance);
         }
         const int argc = sig ? static_cast<int>(tefstd_vector_size(&sig->arg_types)) : 0;
+        if (argc < 0 || argc > 32) {
+            LOG_ERROR("[hook] invalid argc={} (slot={}, sig={})", argc,
+                      g_active_hook_slot.load(), static_cast<const void *>(sig));
+            lua_createtable(L, 0, 0);
+            return;
+        }
         lua_createtable(L, argc, 0);
         for (int i = 0; i < argc; ++i) {
             const auto type = *static_cast<patch_type_t *>(tefstd_vector_at(&sig->arg_types, i));
@@ -99,6 +110,8 @@ namespace lualoader::lua_api {
         if (!s.used || !s.L || s.prefix_ref == LUA_NOREF) return false;
 
         lua_State *L = s.L;
+        g_active_hook_slot.store(slot, std::memory_order_relaxed);
+        g_active_hook_phase.store(1, std::memory_order_relaxed);
         const int base = lua_gettop(L);
         lua_rawgeti(L, LUA_REGISTRYINDEX, s.prefix_ref);
         push_hook_args(L, instance, args, sig, s.copy_handles);
@@ -111,6 +124,8 @@ namespace lualoader::lua_api {
         // 参数：instance, args, result -> 3 个
         if (pcall_log(L, 3, 2, "prefix hook") != LUA_OK) {
             lua_settop(L, base);
+            g_active_hook_slot.store(-1, std::memory_order_relaxed);
+            g_active_hook_phase.store(0, std::memory_order_relaxed);
             return false;
         }
 
@@ -123,6 +138,8 @@ namespace lualoader::lua_api {
             }
         }
         lua_settop(L, base);
+        g_active_hook_slot.store(-1, std::memory_order_relaxed);
+        g_active_hook_phase.store(0, std::memory_order_relaxed);
         return skip;
     }
 
@@ -133,6 +150,8 @@ namespace lualoader::lua_api {
         if (!s.used || !s.L || s.postfix_ref == LUA_NOREF) return;
 
         lua_State *L = s.L;
+        g_active_hook_slot.store(slot, std::memory_order_relaxed);
+        g_active_hook_phase.store(2, std::memory_order_relaxed);
         const int base = lua_gettop(L);
         lua_rawgeti(L, LUA_REGISTRYINDEX, s.postfix_ref);
         push_hook_args(L, instance, args, sig, s.copy_handles);
@@ -155,6 +174,8 @@ namespace lualoader::lua_api {
             pcall_log(L, 3, 0, "postfix hook");
         }
         lua_settop(L, base);
+        g_active_hook_slot.store(-1, std::memory_order_relaxed);
+        g_active_hook_phase.store(0, std::memory_order_relaxed);
     }
 
     void release_slot(const int slot) {

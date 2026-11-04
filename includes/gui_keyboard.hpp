@@ -26,4 +26,7 @@ namespace lualoader::gui::kbd {
     /// 每帧轮询物理键盘，输出本帧新按下的字符 / 退格 / 回车 / ESC。
     void poll(Event &out);
 
+    /// 释放解析过程中缓存的反射句柄（GUI 卸载时调用）。
+    void shutdown();
+
 } // namespace lualoader::gui::kbd

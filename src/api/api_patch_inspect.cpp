@@ -28,7 +28,7 @@ namespace lualoader::lua_api {
         lua_createtable(L, static_cast<int>(n), 0);
         for (size_t i = 0; i < n; ++i) {
             auto *slot = static_cast<patch_handle_t *>(tefstd_vector_at(vec, i));
-            push_handle(L, slot ? *slot : nullptr);
+            push_returned_object(L, slot ? *slot : nullptr);
             lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
         }
     }
@@ -104,7 +104,7 @@ namespace lualoader::lua_api {
         patch_handle_t types[MAX_CALL_ARGS] = {nullptr};
         const int n = read_type_array(L, 3, types, MAX_CALL_ARGS);
         if (n < 0) return luaL_error(L, "bad type array");
-        push_handle(L, type ? patchlib_type_get_method_by_param_types(type, name, n, types) : nullptr);
+        push_returned_object(L, type ? patchlib_type_get_method_by_param_types(type, name, n, types) : nullptr);
         return 1;
     }
 
@@ -130,7 +130,7 @@ namespace lualoader::lua_api {
             }
             for (auto &s: store) names.push_back(s.c_str());
         }
-        push_handle(L, type ? patchlib_type_get_method_by_signature(
+        push_returned_object(L, type ? patchlib_type_get_method_by_signature(
                 type, name, n, types, names.empty() ? nullptr : names.data()) : nullptr);
         return 1;
     }
@@ -163,7 +163,7 @@ namespace lualoader::lua_api {
         const patch_handle_t def = to_handle(L, 1);
         tefstd_vector_t vec;
         if (!fill_type_vector(L, 2, &vec)) { lua_pushnil(L); return 1; }
-        push_handle(L, def ? patchlib_type_make_generic_type(def, &vec) : nullptr);
+        push_returned_object(L, def ? patchlib_type_make_generic_type(def, &vec) : nullptr);
         tefstd_vector_destroy(&vec);
         return 1;
     }
@@ -173,7 +173,7 @@ namespace lualoader::lua_api {
         const patch_handle_t m = to_handle(L, 1);
         tefstd_vector_t vec;
         if (!fill_type_vector(L, 2, &vec)) { lua_pushnil(L); return 1; }
-        push_handle(L, m ? patchlib_method_make_generic_instance(m, &vec) : nullptr);
+        push_returned_object(L, m ? patchlib_method_make_generic_instance(m, &vec) : nullptr);
         tefstd_vector_destroy(&vec);
         return 1;
     }

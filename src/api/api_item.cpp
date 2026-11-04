@@ -427,12 +427,15 @@ namespace lualoader::lua_api {
                                              item_name, fname);
                                 }
                             } else {
+                                patchlib_free(f);
                                 LOG_WARN("[mod.item] {}: 找不到 Item 字段 {}", item_name, fname);
                             }
                         }
                         lua_pop(L, 1);
                     }
                 }
+                // 只释放类句柄；字段句柄保存在 defaults 中，注销时释放。
+                patchlib_free(item_class);
             }
             lua_pop(L, 1);
         }

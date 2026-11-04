@@ -53,6 +53,27 @@ namespace lualoader::lua_api {
         luaL_setmetatable(L, OWNED_HANDLE_MT);
     }
 
+    /// 内核为返回值新分配的引用句柄：
+    /// - 桌面端（Mono）每次 get_value/array_at/invoke 都会 GCHandle.Alloc 一个新句柄，
+    ///   所有权应交给 Lua，否则每帧调用会无限泄漏 GCHandle 并 root 住对象；
+    /// - Android 的句柄就是对象裸指针，保持借用（不能 free/root）。
+    void push_returned_object(lua_State *L, const patch_handle_t h) {
+        if (!h) { lua_pushnil(L); return; }
+#if defined(__ANDROID__)
+        lua_pushlightuserdata(L, h);
+#else
+        push_owned_handle(L, h);
+#endif
+    }
+
+    void free_returned_object(const patch_handle_t h) {
+#if !defined(__ANDROID__)
+        if (h) patchlib_free(h);
+#else
+        (void) h;
+#endif
+    }
+
     /// 托管句柄的 __gc：Lua GC 回收时释放内核句柄，避免泄漏
     int l_owned_handle_gc(lua_State *L) {
         auto *ud = static_cast<OwnedHandle *>(luaL_checkudata(L, 1, OWNED_HANDLE_MT));
@@ -68,10 +89,14 @@ namespace lualoader::lua_api {
     }
 
     void unref_default_values(lua_State *L, std::vector<LuaItemFieldValue> &defaults) {
-        if (!L) return;
         for (auto &d: defaults) {
-            if (d.ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, d.ref);
+            if (L && d.ref != LUA_NOREF) luaL_unref(L, LUA_REGISTRYINDEX, d.ref);
             d.ref = LUA_NOREF;
+#if !defined(__ANDROID__)
+            /* 注册时按字段名取得的句柄由我们拥有（桌面端是 GCHandle），注销/回滚时释放 */
+            if (patchlib_is_valid(d.field)) patchlib_free(d.field);
+#endif
+            d.field = PATCH_NULL;
         }
     }
 

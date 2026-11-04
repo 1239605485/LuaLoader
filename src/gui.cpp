@@ -96,26 +96,39 @@ namespace lualoader::gui {
         }
 
         patch_handle_t render_target = patchlib_type_get_method_by_param_count(main_type, "Draw", 1);
-        if (!render_target || !patchlib_is_valid(render_target)) render_target = patchlib_type_get_method(main_type, "Draw");
+        if (!render_target || !patchlib_is_valid(render_target)) {
+            patchlib_free(render_target);
+            render_target = patchlib_type_get_method(main_type, "Draw");
+        }
         if (!render_target || !patchlib_is_valid(render_target)) {
             LOG_WARN("[gui] render hook target not found, native GUI disabled");
+            patchlib_free(render_target);
+            patchlib_free(main_type);
             return;
         }
         g_draw_hook = patchlib_install_prepost_hook(render_target, nullptr, frame_postfix);
+        // 安装完成后 hook 自带方法指针，不再需要句柄。
+        patchlib_free(render_target);
         if (g_draw_hook == PATCH_HOOK_INVALID_ID) {
             LOG_ERROR("[gui] failed to install render hook");
+            patchlib_free(main_type);
             return;
         }
 
         // 输入屏蔽：在 Main.Update 之前判断是否悬停 GUI
         patch_handle_t update = patchlib_type_get_method_by_param_count(main_type, "Update", 1);
-        if (!update || !patchlib_is_valid(update)) update = patchlib_type_get_method_by_param_count(main_type, "DoUpdate", 1);
+        if (!update || !patchlib_is_valid(update)) {
+            patchlib_free(update);
+            update = patchlib_type_get_method_by_param_count(main_type, "DoUpdate", 1);
+        }
         if (update && patchlib_is_valid(update)) {
             g_update_hook = patchlib_install_prepost_hook(update, update_prefix, nullptr);
             LOG_INFO("[gui] hooked Main.Update for input suppression (id={})", static_cast<int>(g_update_hook));
         } else {
             LOG_WARN("[gui] Main.Update not found; GUI will not suppress game mouse input");
         }
+        patchlib_free(update);
+        patchlib_free(main_type);
 
         // Block mobile controller input at dispatch, before button callbacks run.
 #if defined(__ANDROID__)
@@ -123,10 +136,14 @@ namespace lualoader::gui {
         const auto layer_update=layer_type ? patchlib_type_get_method_by_param_count(layer_type,"UpdateCursor",1) : nullptr;
         if(layer_update && patchlib_is_valid(layer_update))
             g_layer_hook=patchlib_install_prepost_hook(layer_update,cursor_layer_prefix,nullptr);
+        patchlib_free(layer_update);
+        patchlib_free(layer_type);
         const auto cm_type=patchlib_type_get_type("", "CursorManager");
         const auto list_update=cm_type ? patchlib_type_get_method_by_param_count(cm_type,"UpdateCursorList",0) : nullptr;
         if(list_update && patchlib_is_valid(list_update))
             g_cursor_list_hook=patchlib_install_prepost_hook(list_update,nullptr,cursor_list_postfix);
+        patchlib_free(list_update);
+        patchlib_free(cm_type);
         LOG_INFO("[gui] touch capture layer={} cursor-list={}",static_cast<int>(g_layer_hook),static_cast<int>(g_cursor_list_hook));
 #endif
         // 预解析绘制接口
@@ -159,11 +176,15 @@ namespace lualoader::gui {
         g_captured_touches.clear();
 #endif
         clear_text_cache();images::clear();
+        // GUI 自己的反射句柄与输入法/键盘缓存也必须释放，否则每次重新加载都会泄漏。
+        release_gfx();
+        ime::shutdown();
+        kbd::shutdown();
         g_image_release_queue.clear();
         g_scrolls.clear();g_scroll_stack.clear();g_active_scroll.clear();g_viewport={};
         g_style_window=nullptr;g_ctx=nullptr;g_sb=nullptr;g_recording=false;g_in_render=false;
         save_layout();g_folders.clear();g_open_folder.clear();g_member_gestures.clear();g_position_applied.clear();
-        g_windows.clear();g_headers.clear();g_edit=EditState{};ime::close();kbd::reset();g_cmds.clear();g_next_window_order=0;
+        g_windows.clear();g_headers.clear();g_edit=EditState{};g_cmds.clear();g_next_window_order=0;
         g_render_owner.clear();g_input_owner.clear();g_pointer_owner.clear();g_current_mod.clear();
         g_drag_id.clear();g_slider_active.clear();g_click_state.reset();
         g_mouse_down=g_prev_mouse_down=g_mouse_pressed=g_mouse_released=g_hover_gui=false;

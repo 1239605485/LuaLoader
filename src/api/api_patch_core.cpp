@@ -24,7 +24,7 @@ namespace lualoader::lua_api {
     static int l_patch_get_type(lua_State *L) {
         const char *ns = luaL_checkstring(L, 1);
         const char *name = luaL_checkstring(L, 2);
-        push_handle(L, patchlib_type_get_type(ns, name));
+        push_returned_object(L, patchlib_type_get_type(ns, name));
         return 1;
     }
 
@@ -65,7 +65,7 @@ namespace lualoader::lua_api {
         const char *name = luaL_checkstring(L, 1);
         patch_type_t type;
         if (type_from_name(name, &type)) {
-            push_handle(L, patchlib_get_basic_type(type));
+            push_returned_object(L, patchlib_get_basic_type(type));
         } else {
             lua_pushnil(L);
         }
@@ -73,7 +73,7 @@ namespace lualoader::lua_api {
     }
 
     static int l_patch_get_parent(lua_State *L) {
-        push_handle(L, patchlib_type_get_parent(to_handle(L, 1)));
+        push_returned_object(L, patchlib_type_get_parent(to_handle(L, 1)));
         return 1;
     }
 
@@ -83,7 +83,7 @@ namespace lualoader::lua_api {
     static int l_patch_get_inner_type(lua_State *L) {
         const patch_handle_t parent = to_handle(L, 1);
         const char *name = luaL_checkstring(L, 2);
-        push_handle(L, patchlib_type_get_inner_type(parent, name));
+        push_returned_object(L, patchlib_type_get_inner_type(parent, name));
         return 1;
     }
 
@@ -99,12 +99,12 @@ namespace lualoader::lua_api {
     }
 
     static int l_patch_get_field(lua_State *L) {
-        push_handle(L, patchlib_type_get_field(to_handle(L, 1), luaL_checkstring(L, 2)));
+        push_returned_object(L, patchlib_type_get_field(to_handle(L, 1), luaL_checkstring(L, 2)));
         return 1;
     }
 
     static int l_patch_get_property(lua_State *L) {
-        push_handle(L, patchlib_type_get_property(to_handle(L, 1), luaL_checkstring(L, 2)));
+        push_returned_object(L, patchlib_type_get_property(to_handle(L, 1), luaL_checkstring(L, 2)));
         return 1;
     }
 
@@ -112,10 +112,10 @@ namespace lualoader::lua_api {
         const patch_handle_t type = to_handle(L, 1);
         const char *name = luaL_checkstring(L, 2);
         if (lua_isnoneornil(L, 3)) {
-            push_handle(L, patchlib_type_get_method(type, name));
+            push_returned_object(L, patchlib_type_get_method(type, name));
         } else {
             const int argc = static_cast<int>(luaL_checkinteger(L, 3));
-            push_handle(L, patchlib_type_get_method_by_param_count(type, name, argc));
+            push_returned_object(L, patchlib_type_get_method_by_param_count(type, name, argc));
         }
         return 1;
     }
@@ -185,7 +185,9 @@ namespace lualoader::lua_api {
             return 1;
         }
         if (is_string_type_arg(L, 3)) {
-            push_managed_string(L, read_field_object(field, instance));
+            const patch_handle_t s = read_field_object(field, instance);
+            push_managed_string(L, s);
+            free_returned_object(s);
             return 1;
         }
         const patch_type_t type = resolve_field_type(L, 3, field);
@@ -198,9 +200,16 @@ namespace lualoader::lua_api {
         }
         push_patch_value(L, type, ptr);
 #else
-        uint64_t buffer = 0;
-        patchlib_field_get_value(field, instance, &buffer);
-        push_patch_value(L, type, &buffer);
+        /* 字段可能大于 8 字节（结构体），按真实大小分配，避免栈越界 */
+        const size_t fsz = patchlib_field_get_size ? patchlib_field_get_size(field) : 0;
+        std::vector<unsigned char> buf(fsz > 8 ? fsz : 8, 0);
+        patchlib_field_get_value(field, instance, buf.data());
+        if (type == PATCH_OBJECT) {
+            /* 包装层为引用字段分配了新 GCHandle，所有权交给 Lua GC */
+            push_returned_object(L, *reinterpret_cast<patch_handle_t *>(buf.data()));
+        } else {
+            push_patch_value(L, type, buf.data());
+        }
 #endif
         return 1;
     }
@@ -225,9 +234,10 @@ namespace lualoader::lua_api {
         if (!ptr) return luaL_error(L, "cannot get field pointer");
         read_patch_value(L, 3, type, ptr);
 #else
-        uint64_t buffer = 0;
-        read_patch_value(L, 3, type, &buffer);
-        patchlib_field_set_value(field, instance, &buffer);
+        const size_t fsz = patchlib_field_get_size ? patchlib_field_get_size(field) : 0;
+        std::vector<unsigned char> buf(fsz > 8 ? fsz : 8, 0);
+        read_patch_value(L, 3, type, buf.data());
+        patchlib_field_set_value(field, instance, buf.data());
 #endif
         return 0;
     }
@@ -289,7 +299,10 @@ namespace lualoader::lua_api {
             lua_pushboolean(L, false);
             return 1;
         }
-        push_patch_value(L, return_type, &result);
+        if (return_type == PATCH_OBJECT)
+            push_returned_object(L, *reinterpret_cast<patch_handle_t *>(&result));
+        else
+            push_patch_value(L, return_type, &result);
         return 1;
     }
 
@@ -298,7 +311,7 @@ namespace lualoader::lua_api {
             release_owned_handle(ud);
             return 0;
         }
-        patchlib_free(to_handle(L, 1));
+        /* lightuserdata 是借用句柄（hook 参数、数组元素、原生指针），不能在此释放 */
         return 0;
     }
 
@@ -307,11 +320,20 @@ namespace lualoader::lua_api {
     // ========================================================================
 
     /// 解析构造函数并创建实例（参数从 first_arg 开始按签名编组）
-    static int construct_instance(lua_State *L, const patch_handle_t ctor, const int first_arg) {
-        if (!ctor) return luaL_error(L, "constructor not found");
+    /// own_ctor: ctor 是否由本函数拥有（桌面端是新建 GCHandle，必须释放）
+    static int construct_instance(lua_State *L, const patch_handle_t ctor, const int first_arg,
+                                  const bool own_ctor) {
+        auto release_ctor = [&]() {
+            if (own_ctor) patchlib_free(ctor);
+        };
+        if (!ctor) {
+            release_ctor();
+            return luaL_error(L, "constructor not found");
+        }
 
         patch_method_signature_t sig;
         if (!patchlib_method_get_signature(ctor, &sig)) {
+            release_ctor();
             return luaL_error(L, "cannot get constructor signature");
         }
         uint64_t storage[MAX_CALL_ARGS][1] = {};
@@ -319,13 +341,16 @@ namespace lualoader::lua_api {
         const int built = build_arg_array(L, first_arg, &sig, storage, argv, MAX_CALL_ARGS);
         if (built < 0) {
             patchlib_method_signature_free(&sig);
+            release_ctor();
             if (built == -1) return luaL_error(L, "too many constructor arguments (max %d)", MAX_CALL_ARGS);
             return luaL_error(L, "constructor argument type mismatch");
         }
         patchlib_method_signature_free(&sig);
 
         patch_handle_t instance = nullptr;
-        if (!patchlib_constructor_invoke(ctor, &instance, argv)) {
+        const bool ok = patchlib_constructor_invoke(ctor, &instance, argv);
+        release_ctor();
+        if (!ok) {
             lua_pushnil(L);
             return 1;
         }
@@ -348,14 +373,14 @@ namespace lualoader::lua_api {
             return luaL_error(L, "too many constructor arguments (max %d)", MAX_CALL_ARGS);
         }
         const patch_handle_t ctor = patchlib_type_get_method_by_param_count(type, ".ctor", argc);
-        return construct_instance(L, ctor, 2);
+        return construct_instance(L, ctor, 2, true);
     }
 
     /// mod.patch.construct(ctor, ...)：使用显式构造函数句柄创建实例
     static int l_patch_construct(lua_State *L) {
         const patch_handle_t ctor = to_handle(L, 1);
         if (!ctor) return luaL_error(L, "invalid constructor handle");
-        return construct_instance(L, ctor, 2);
+        return construct_instance(L, ctor, 2, false);
     }
 
     // ========================================================================

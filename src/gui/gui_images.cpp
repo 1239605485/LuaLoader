@@ -36,6 +36,7 @@ std::unordered_map<unsigned long long,void*> crops;
 };
 std::unordered_map<std::string,Entry> cache;
 void *draw_method=nullptr;
+void *dispose_method_cache=nullptr;
 #if defined(__ANDROID__)
 void *native_draw=nullptr;
 #endif
@@ -105,27 +106,39 @@ void resolve(){
  void *types[]={texture,rect,color};
  draw_method=patchlib_type_get_method_by_param_types(sb,"Draw",3,types);
 #endif
+ // 临时类型句柄用完即释放（桌面端每个都是独立 GCHandle），draw_method 长期缓存。
+ patchlib_free(texture);patchlib_free(sb);patchlib_free(rect);patchlib_free(color);
+#if defined(__ANDROID__)
+ patchlib_free(vec);patchlib_free(single);patchlib_free(effects);
+#endif
  LOG_INFO("[gui-image] draw interface={} texture API={}",draw_method!=nullptr,terraria_texture2d_create!=nullptr);
 }
 bool load(Entry &e){
  if(e.attempted)return e.tex!=nullptr;
  if(!can_upload())return false;
  e.attempted=true;resolve();
- if(!draw_method || !terraria_texture2d_create || !terraria_texture2d_get_class || !terraria_texture2d_get_class()){e.error="image API unavailable";return false;}
+ const patch_handle_t tex_class = terraria_texture2d_get_class ? terraria_texture2d_get_class() : PATCH_NULL;
+ const bool texture_api_ready = patchlib_is_valid(tex_class);
+ patchlib_free(tex_class);
+ if(!draw_method || !terraria_texture2d_create || !terraria_texture2d_get_class || !texture_api_ready){e.error="image API unavailable";return false;}
 #if defined(__ANDROID__)
  if(!pin || !unpin){e.error="IL2CPP GC retention unavailable";return false;}
  const auto ut=patchlib_type_get_type("UnityEngine","Texture2D");
  const auto xt=patchlib_type_get_type("Microsoft.Xna.Framework.Graphics","Texture2D");
  const auto texture_base=patchlib_type_get_type("UnityEngine","Texture");
- if(!ut || !xt || !texture_base || !patchlib_type_get_method_by_param_count(ut,".ctor",4) ||
-    !patchlib_type_get_method_by_param_count(texture_base,"set_filterMode",1) ||
-    !patchlib_type_get_method_by_param_count(texture_base,"set_wrapMode",1) ||
-    !patchlib_type_get_method_by_param_count(ut,"GetWritableImageData",1) ||
-    !patchlib_type_get_method_by_param_count(ut,"GetRawImageDataSize",0) ||
-    !patchlib_type_get_method_by_param_count(ut,"Apply",0) ||
-    !patchlib_type_get_method_by_param_types(xt,".ctor",1,&ut)){
-    e.error="Unity texture upload interface unavailable";return false;
- }
+ const auto m_ctor=ut?patchlib_type_get_method_by_param_count(ut,".ctor",4):nullptr;
+ const auto m_filter=texture_base?patchlib_type_get_method_by_param_count(texture_base,"set_filterMode",1):nullptr;
+ const auto m_wrap=texture_base?patchlib_type_get_method_by_param_count(texture_base,"set_wrapMode",1):nullptr;
+ const auto m_data=ut?patchlib_type_get_method_by_param_count(ut,"GetWritableImageData",1):nullptr;
+ const auto m_size=ut?patchlib_type_get_method_by_param_count(ut,"GetRawImageDataSize",0):nullptr;
+ const auto m_apply=ut?patchlib_type_get_method_by_param_count(ut,"Apply",0):nullptr;
+ const auto m_xctor=xt?patchlib_type_get_method_by_param_types(xt,".ctor",1,&ut):nullptr;
+ const bool upload_ready=ut && xt && texture_base && m_ctor && m_filter && m_wrap &&
+                         m_data && m_size && m_apply && m_xctor;
+ patchlib_free(m_ctor);patchlib_free(m_filter);patchlib_free(m_wrap);
+ patchlib_free(m_data);patchlib_free(m_size);patchlib_free(m_apply);patchlib_free(m_xctor);
+ patchlib_free(ut);patchlib_free(xt);patchlib_free(texture_base);
+ if(!upload_ready){e.error="Unity texture upload interface unavailable";return false;}
 #endif
   std::vector<unsigned char> pixbuf;
  if(e.path=="@builtin-white"){
@@ -156,7 +169,14 @@ bool load(Entry &e){
 #endif
  try { e.tex=terraria_texture2d_create(e.w,e.h,TEXTURE_FORMAT_RGBA32,pixels,count); }
  catch(...){e.error="texture upload exception";}
- if(!e.tex){if(e.error.empty())e.error="texture upload failed";return false;}
+ if(!e.tex){
+  if(e.error.empty())e.error="texture upload failed";
+#if !defined(__ANDROID__)
+  // 上传失败时不要继续持有 CPU 像素；e.resident 尚未计数，否则会变成漏算内存。
+  std::vector<unsigned char>().swap(e.pixels);
+#endif
+  return false;
+ }
 #if defined(__ANDROID__)
  e.pin=pin(e.tex,false);if(!e.pin){destroy_texture(e.tex);e.tex=nullptr;e.error="texture GC retention failed";return false;}
 #endif
@@ -268,9 +288,18 @@ void solid(void *sb,float x,float y,float w,float h,const void *color){
  draw(sb,"@builtin-white",x,y,w,h,color);
 }
 void *dispose_method(){
+ // Dispose 方法句柄只解析一次；此前每次销毁纹理都重新查找，且沿途的
+ // type/parent 句柄全部泄漏（桌面端每个都是独立 GCHandle）。
+ if(dispose_method_cache)return dispose_method_cache;
  auto type=patchlib_type_get_type("Microsoft.Xna.Framework.Graphics","Texture2D");
- for(int i=0;type && i<8;++i){auto method=patchlib_type_get_method_by_param_count(type,"Dispose",0);if(method)return method;type=patchlib_type_get_parent(type);}
- return nullptr;
+ for(int i=0;type && i<8;++i){
+  auto method=patchlib_type_get_method_by_param_count(type,"Dispose",0);
+  if(method){dispose_method_cache=method;break;}
+  auto parent=patchlib_type_get_parent(type);
+  patchlib_free(type);type=parent;
+ }
+ patchlib_free(type);
+ return dispose_method_cache;
 }
 void destroy_texture(void *t){
  if(!t)return;auto dispose=dispose_method();
@@ -318,7 +347,11 @@ void prune(const std::vector<std::string> &owners){
  for(const auto &id:remove)release(id);
 }
 void clear(){std::vector<std::string> ids;for(auto &kv:cache)ids.push_back(kv.first);for(auto &id:ids)release(id);
- cache.clear();texture_bytes=0;frame=evictions=0;clip={};draw_method=nullptr;resolved=false;
+ cache.clear();texture_bytes=0;frame=evictions=0;clip={};
+ // 所有纹理已销毁，最后释放长期缓存的绘制/销毁方法句柄。
+ patchlib_free(draw_method);draw_method=nullptr;
+ patchlib_free(dispose_method_cache);dispose_method_cache=nullptr;
+ resolved=false;
 #if defined(__ANDROID__)
  native_draw=nullptr;
 #endif

@@ -132,6 +132,20 @@ namespace lualoader::gui::ime {
         g_kb_root = 0;
     }
 
+    void shutdown() {
+        close();
+        patchlib_free(t_kb);
+        patchlib_free(m_open);
+        patchlib_free(m_get_text);
+        patchlib_free(m_get_status);
+        patchlib_free(m_set_active);
+        patchlib_free(m_destroy);
+        patchlib_free(m_set_hide);
+        t_kb = m_open = m_get_text = m_get_status = PATCH_NULL;
+        m_set_active = m_destroy = m_set_hide = PATCH_NULL;
+        g_resolved = false;
+    }
+
     int poll(std::string &text) {
         resolve();
         if (!patchlib_is_valid(g_kb)) return 1;
@@ -163,6 +177,7 @@ namespace lualoader::gui::ime {
     void open(const std::string &) {}
     void close() {}
     int poll(std::string &) { return 1; }
+    void shutdown() {}
 } // namespace lualoader::gui::ime
 
 #endif

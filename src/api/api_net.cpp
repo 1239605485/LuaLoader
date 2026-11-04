@@ -7,13 +7,14 @@ namespace lualoader::lua_api {
     /// mod.net.mode() -> 0=单机 1=客户端 2=服务端
     static int l_net_mode(lua_State *L) {
         static patch_handle_t f_net_mode = PATCH_NULL;
+        static patch_handle_t net_cls = PATCH_NULL;
         static bool tried = false;
         if (!tried) {
             tried = true;
-            const patch_handle_t cls = patchlib_type_get_type("Terraria", "Main");
-            if (patchlib_is_valid(cls)) {
-                f_net_mode = patchlib_type_get_field(cls, "netMode");
-                patchlib_free(cls);
+            net_cls = patchlib_type_get_type("Terraria", "Main");
+            if (patchlib_is_valid(net_cls)) {
+                f_net_mode = patchlib_type_get_field(net_cls, "netMode");
+                /* 桌面端 field 依附 class，net_cls 必须常驻（进程级，一个句柄）。 */
             }
         }
         int mode = 0;

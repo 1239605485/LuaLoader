@@ -67,7 +67,10 @@ namespace lualoader::lua_api {
             lua_pushnil(L);
             return 1;
         }
-        push_patch_value(L, vtype, &out);
+        if (vtype == PATCH_OBJECT)
+            push_returned_object(L, *reinterpret_cast<patch_handle_t *>(&out));
+        else
+            push_patch_value(L, vtype, &out);
         return 1;
     }
 
@@ -153,7 +156,7 @@ namespace lualoader::lua_api {
     /// mod.patch.list_get_array(list) -> array | nil
     static int l_patch_list_get_array(lua_State *L) {
         const patch_handle_t list = to_handle(L, 1);
-        push_handle(L, list ? patchlib_list_get_array(list) : nullptr);
+        push_returned_object(L, list ? patchlib_list_get_array(list) : nullptr);
         return 1;
     }
 
