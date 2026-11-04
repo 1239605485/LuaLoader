@@ -60,9 +60,3 @@
 #include "terraria/content/projectile_manager.h"
 #include "terraria/content/audio_manager.h"
 #include "terraria/gui.h"
-
-#if defined(__ANDROID__)
-/* TODO(button): 内核 button_manager 被上游 revert，暂时禁用
-#include "terraria/content/button_manager.h"
-*/
-#endif
