@@ -1,11 +1,3 @@
-
-> [!TIP]
-> **Language Notice / 语言说明**
->
-> 为了提高沟通效率，本项目仅接受**英文**或**中文**交流。若您使用其他语言，请先使用翻译工具，感谢理解。
->
-> To improve communication efficiency, this project only accepts **English** or **Chinese**. If you use another language, please use a translation tool first. Thanks for understanding.
-
 # LuaLoader
 
 **用 Lua 写 Terraria Mod，不编译，一份脚本全平台通用。**

@@ -1,5 +1,6 @@
 #if defined(__ANDROID__)
 #include "controls.hpp"
+#include "support_api.h"
 #endif
 /*******************************************************************************
  * LuaLoader - lua engine
@@ -569,6 +570,9 @@ namespace lualoader::lua_engine {
 
     void close(lua_mod_handle_t *handle) {
         if (!handle) return;
+#if defined(__ANDROID__)
+        if (handle->L) lualoader_support_close(handle->L);
+#endif
         lua_api::uninstall_all_hooks(handle);
         lua_api::unregister_items(handle);
         lua_api::unregister_buffs(handle);

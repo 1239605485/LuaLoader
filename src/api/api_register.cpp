@@ -1,5 +1,6 @@
 #if defined(__ANDROID__)
 #include "controls.hpp"
+#include "support_api.h"
 #endif
 #include "api_internal.hpp"
 
@@ -117,6 +118,7 @@ namespace lualoader::lua_api {
 
 #if defined(__ANDROID__)
         controls::register_api(L, handle);
+        lualoader_support_register(L);
 #endif
         lua_pushvalue(L, -1);
         lua_setglobal(L, "mod");

@@ -52,7 +52,7 @@ set(LUALOADER_SOURCES
 )
 
 if(ANDROID)
-    list(APPEND LUALOADER_SOURCES src/controls.cpp)
+    list(APPEND LUALOADER_SOURCES src/controls.cpp src/api/api_support.c)
 endif()
 
 add_library(LuaLoader SHARED ${LUALOADER_SOURCES})
