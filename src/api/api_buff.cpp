@@ -49,7 +49,7 @@ namespace lualoader::lua_api {
 
     static void lua_buff_apply(terraria_buff_handle_t *current, patch_handle_t player, int time) {
         LuaBuffEntry *e = buff_from_handle(current);
-        if (!e || !e->L || e->apply_ref == LUA_NOREF) return;
+        if (!e || e->apply_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->apply_ref);
         push_handle(L, player);
@@ -60,7 +60,7 @@ namespace lualoader::lua_api {
     static void lua_buff_update(terraria_buff_handle_t *current, patch_handle_t player,
                                 int buff_index) {
         LuaBuffEntry *e = buff_from_handle(current);
-        if (!e || !e->L || e->update_ref == LUA_NOREF) return;
+        if (!e || e->update_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->update_ref);
         push_handle(L, player);

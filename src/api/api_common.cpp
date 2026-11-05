@@ -284,15 +284,22 @@ namespace lualoader::lua_api {
 
     /// 调用栈顶的函数（函数与参数已按顺序入栈），带 traceback，出错时记录日志
     int pcall_log(lua_State *L, const int nargs, const int nresults, const char *what) {
+        const int base = lua_gettop(L) - nargs - 1; // 函数之下的栈底（若有）
         const int funcidx = lua_gettop(L) - nargs;
         lua_pushcfunction(L, lua_traceback);
         lua_insert(L, funcidx);
         const int status = lua_pcall(L, nargs, nresults, funcidx);
+        // 移除 traceback 函数（此时它位于 funcidx，若成功；失败时错误对象在栈顶）
         lua_remove(L, funcidx);
         if (status != LUA_OK) {
-            const char *err = lua_tostring(L, -1);
+            // 错误对象可能是任意类型（string / table / 数字等）。
+            // 用 luaL_tolstring 安全转换为字符串：即便 error({...}) 也不会返回 NULL，
+            // 避免对 NULL 做后续处理导致崩溃。
+            size_t len = 0;
+            const char *err = luaL_tolstring(L, -1, &len);
             LOG_ERROR("[lua] {} failed: {}", what, err ? err : "unknown error");
-            lua_pop(L, 1);
+            lua_pop(L, 1); // 弹出 luaL_tolstring 压入的字符串
+            lua_settop(L, base); // 保证出错后栈被正确复位
         }
         return status;
     }

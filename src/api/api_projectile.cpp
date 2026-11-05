@@ -47,7 +47,7 @@ namespace lualoader::lua_api {
         if (!e || !inst) return;
         for (const auto &d: e->defaults)
             if (patchlib_is_valid(d.field)) item_field_write(d.field, inst, d.type, &d.value);
-        if (e->defaults_ref != LUA_NOREF && e->L) {
+        if (e->defaults_ref != LUA_NOREF && call_ctx_alive(e->L, e->owner)) {
             lua_State *L = e->L;
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
             push_handle(L, inst);
@@ -58,7 +58,7 @@ namespace lualoader::lua_api {
     static void lua_projectile_ai(terraria_projectile_handle_t *current,
                                   const patch_handle_t inst) {
         LuaProjectileEntry *e = projectile_from_handle(current);
-        if (!e || !inst || e->ai_ref == LUA_NOREF || !e->L) return;
+        if (!e || !inst || e->ai_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->ai_ref);
         push_handle(L, inst);
@@ -68,7 +68,7 @@ namespace lualoader::lua_api {
     static void lua_projectile_on_kill(terraria_projectile_handle_t *current,
                                        const patch_handle_t inst) {
         LuaProjectileEntry *e = projectile_from_handle(current);
-        if (!e || !inst || e->on_kill_ref == LUA_NOREF || !e->L) return;
+        if (!e || !inst || e->on_kill_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->on_kill_ref);
         push_handle(L, inst);
@@ -80,7 +80,7 @@ namespace lualoader::lua_api {
                                        const int damage, const int hit_direction,
                                        const bool crit) {
         LuaProjectileEntry *e = projectile_from_handle(current);
-        if (!e || !inst || e->hit_npc_ref == LUA_NOREF || !e->L) return;
+        if (!e || !inst || e->hit_npc_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->hit_npc_ref);
         push_handle(L, inst);
@@ -96,7 +96,7 @@ namespace lualoader::lua_api {
                                           const int damage, const int hit_direction,
                                           const bool pvp, const bool crit) {
         LuaProjectileEntry *e = projectile_from_handle(current);
-        if (!e || !inst || e->hit_player_ref == LUA_NOREF || !e->L) return;
+        if (!e || !inst || e->hit_player_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->hit_player_ref);
         push_handle(L, inst);
@@ -112,7 +112,7 @@ namespace lualoader::lua_api {
                                             const patch_handle_t inst,
                                             const float old_vx, const float old_vy) {
         LuaProjectileEntry *e = projectile_from_handle(current);
-        if (!e || !inst || e->tile_collide_ref == LUA_NOREF || !e->L) return;
+        if (!e || !inst || e->tile_collide_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->tile_collide_ref);
         push_handle(L, inst);

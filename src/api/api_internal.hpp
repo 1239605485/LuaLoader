@@ -70,6 +70,15 @@ namespace lualoader::lua_api {
         void *root; ///< Android：托管对象的 GC 强引用
     };
 
+    /// 判断某个 entry 记录的回调上下文是否仍然可用：
+    /// entry 及其 owner handle 都必须存活，且 entry 缓存的 Lua 状态机必须与
+    /// owner 当前的状态机一致（handle 被 close 后 handle->L 置空，此处即失效）。
+    /// 用于在 SetDefaults / AI / hook 等异步回调入口兜底，防止对已 lua_close 的
+    /// 状态机执行 lua_rawgeti / lua_next 等操作（会触发原生 SIGSEGV）。
+    inline bool call_ctx_alive(const lua_State *L, const lua_mod_handle_t *owner) {
+        return L != nullptr && owner != nullptr && owner->L == L;
+    }
+
     // ---- 基础工具 ----
     lua_mod_handle_t *get_handle(lua_State *L);
     patch_handle_t copy_handle(patch_handle_t h);

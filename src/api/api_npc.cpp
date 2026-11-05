@@ -53,7 +53,7 @@ namespace lualoader::lua_api {
         if (!e || !inst) return;
         for (const auto &d: e->defaults)
             if (patchlib_is_valid(d.field)) item_field_write(d.field, inst, d.type, &d.value);
-        if (e->defaults_ref != LUA_NOREF && e->L) {
+        if (e->defaults_ref != LUA_NOREF && call_ctx_alive(e->L, e->owner)) {
             lua_State *L = e->L;
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
             push_handle(L, inst);
@@ -63,7 +63,7 @@ namespace lualoader::lua_api {
 
     static void lua_npc_ai(terraria_npc_handle_t *current, patch_handle_t inst) {
         LuaNpcEntry *e = npc_from_handle(current);
-        if (!e || !inst || e->ai_ref == LUA_NOREF || !e->L) return;
+        if (!e || !inst || e->ai_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->ai_ref);
         push_handle(L, inst);
@@ -74,7 +74,7 @@ namespace lualoader::lua_api {
         LuaNpcEntry *e = npc_from_handle(current);
         if (!e || !inst) return;
 
-        if (e->on_death_ref != LUA_NOREF && e->L) {
+        if (e->on_death_ref != LUA_NOREF && call_ctx_alive(e->L, e->owner)) {
             lua_State *L = e->L;
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->on_death_ref);
             push_handle(L, inst);

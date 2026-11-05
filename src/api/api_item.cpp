@@ -68,7 +68,7 @@ namespace lualoader::lua_api {
         if (!e || !inst) return;
         for (const auto &d: e->defaults)
             if (patchlib_is_valid(d.field)) item_field_write(d.field, inst, d.type, &d.value);
-        if (e->defaults_ref != LUA_NOREF && e->L) {
+        if (e->defaults_ref != LUA_NOREF && call_ctx_alive(e->L, e->owner)) {
             lua_State *L = e->L;
             lua_rawgeti(L, LUA_REGISTRYINDEX, e->defaults_ref);
             push_handle(L, inst);
@@ -95,7 +95,7 @@ namespace lualoader::lua_api {
     static void lua_item_use(terraria_item_handle_t *current, patch_handle_t player,
                              patch_handle_t item) {
         LuaItemEntry *e = item_from_handle(current);
-        if (!e || !e->L || e->use_ref == LUA_NOREF) return;
+        if (!e || e->use_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->use_ref);
         push_handle(L, player);
@@ -106,7 +106,7 @@ namespace lualoader::lua_api {
     static bool lua_item_can_use(terraria_item_handle_t *current, const patch_handle_t player,
                                  const patch_handle_t item, const bool ignore_cursed) {
         LuaItemEntry *e = item_from_handle(current);
-        if (!e || e->can_use_ref == LUA_NOREF || !e->L) return true;
+        if (!e || e->can_use_ref == LUA_NOREF || !call_ctx_alive(e->L, e->owner)) return true;
         lua_State *L = e->L;
         lua_rawgeti(L, LUA_REGISTRYINDEX, e->can_use_ref);
         push_handle(L, player);
