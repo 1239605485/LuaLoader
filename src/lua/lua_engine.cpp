@@ -577,9 +577,7 @@ namespace lualoader::lua_engine {
         lua_api::unregister_recipes(handle);
         if (handle->L) {
 #if defined(__ANDROID__)
-            /* TODO(button): 内核 button_manager 被上游 revert，暂时禁用
             controls::unregister_owner(handle);
-            */
 #endif
             lua_close(handle->L);
             handle->L = nullptr;
